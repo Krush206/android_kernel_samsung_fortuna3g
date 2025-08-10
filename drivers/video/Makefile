@@ -182,3 +182,6 @@ endif
 # DCT (Display Clock Tunning)
 obj-$(CONFIG_SEC_DISP_CLK_TUNNING) += sec_dct.o
 obj-$(CONFIG_SEC_DISP_CLK_TUNNING) += dct/
+
+# Android framebuffer driver
+obj-$(CONFIG_ANDROID_FRAMEBUFFER) += android/
