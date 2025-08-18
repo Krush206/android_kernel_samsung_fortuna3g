@@ -104,6 +104,11 @@ static int mdss_fb_pan_idle(struct msm_fb_data_type *mfd);
 static int mdss_fb_send_panel_event(struct msm_fb_data_type *mfd,
 					int event, void *arg);
 static void mdss_fb_set_mdp_sync_pt_threshold(struct msm_fb_data_type *mfd);
+static void mdss_fb_fillrect(struct fb_info *p, const struct fb_fillrect *rect);
+static void mdss_fb_copyarea(struct fb_info *p, const struct fb_copyarea *area);
+static void mdss_fb_imageblit(struct fb_info *p, const struct fb_image *image);
+static int __mdss_fb_perform_commit(struct msm_fb_data_type *mfd);
+
 void mdss_fb_no_update_notify_timer_cb(unsigned long data)
 {
 	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)data;
@@ -1647,6 +1652,9 @@ static struct fb_ops mdss_fb_ops = {
 	.fb_compat_ioctl = mdss_fb_compat_ioctl,
 #endif
 	.fb_mmap = mdss_fb_mmap,
+	.fb_fillrect = mdss_fb_fillrect,
+	.fb_copyarea = mdss_fb_copyarea,
+	.fb_imageblit = mdss_fb_imageblit
 };
 
 static int mdss_fb_alloc_fbmem_iommu(struct msm_fb_data_type *mfd, int dom)
@@ -1944,6 +1952,7 @@ static int mdss_fb_register(struct msm_fb_data_type *mfd)
 	init_waitqueue_head(&mfd->idle_wait_q);
 	init_waitqueue_head(&mfd->ioctl_q);
 	init_waitqueue_head(&mfd->kickoff_wait_q);
+	init_waitqueue_head(&mfd->run_wait_q);
 
 	ret = fb_alloc_cmap(&fbi->cmap, 256, 0);
 	if (ret)
@@ -2447,21 +2456,10 @@ static int __mdss_fb_sync_buf_done_callback(struct notifier_block *p,
  */
 static int mdss_fb_pan_idle(struct msm_fb_data_type *mfd)
 {
-	int ret = 0;
-
-	ret = wait_event_timeout(mfd->idle_wait_q,
-			(!atomic_read(&mfd->commits_pending) ||
-			 mfd->shutdown_pending),
-			msecs_to_jiffies(WAIT_DISP_OP_TIMEOUT));
-	if (!ret) {
-		pr_err("wait for idle timeout %d pending=%d\n",
-				ret, atomic_read(&mfd->commits_pending));
-
-		mdss_fb_signal_timeline(&mfd->mdp_sync_pt_data);
-	} else if (mfd->shutdown_pending) {
-		pr_debug("Shutdown signalled\n");
-		return -EPERM;
-	}
+	atomic_set(&mfd->is_idling, 1);
+	wake_up_all(&mfd->commit_wait_q);
+	__wait_event(mfd->idle_wait_q, 1);
+	wake_up_all(&mfd->run_wait_q);
 
 	return 0;
 }
@@ -2660,19 +2658,29 @@ static int __mdss_fb_display_thread(void *data)
 	while (1) {
 		wait_event(mfd->commit_wait_q,
 				(atomic_read(&mfd->commits_pending) ||
+				 atomic_read(&mfd->is_idling) ||
 				 kthread_should_stop()));
 
 		if (kthread_should_stop())
 			break;
 
+		if (atomic_read(&mfd->is_idling)) {
+			while (atomic_read(&mfd->commits_pending)) {
+				ret = __mdss_fb_perform_commit(mfd);
+				atomic_dec(&mfd->commits_pending);
+			}
+			atomic_set(&mfd->is_idling, 0);
+			wake_up_all(&mfd->idle_wait_q);
+			__wait_event(mfd->run_wait_q, 1);
+			continue;
+		}
+
 		ret = __mdss_fb_perform_commit(mfd);
 		atomic_dec(&mfd->commits_pending);
-		wake_up_all(&mfd->idle_wait_q);
 	}
 
 	mdss_fb_release_kickoff(mfd);
 	atomic_set(&mfd->commits_pending, 0);
-	wake_up_all(&mfd->idle_wait_q);
 
 	return ret;
 }
@@ -2798,6 +2806,8 @@ static int mdss_fb_check_var(struct fb_var_screeninfo *var,
 	return 0;
 }
 
+#define EARLY_MEM_ALLOC_FAIL "FrameBuffer[%d] early memory allocation failed\n"
+
 static int mdss_fb_set_par(struct fb_info *info)
 {
 	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
@@ -2867,9 +2877,16 @@ static int mdss_fb_set_par(struct fb_info *info)
 
 	if (mfd->panel_reconfig || (mfd->fb_imgType != old_imgType)) {
 		mdss_fb_blank_sub(FB_BLANK_POWERDOWN, info, mfd->op_enable);
+		mdss_fb_free_fb_ion_memory(mfd);
+		if (mdss_fb_alloc_fb_ion_memory(mfd, info->fix.smem_len) < 0)
+			pr_err(EARLY_MEM_ALLOC_FAIL, mfd->index);
 		mdss_fb_var_to_panelinfo(var, mfd->panel_info);
 		mdss_fb_blank_sub(FB_BLANK_UNBLANK, info, mfd->op_enable);
 		mfd->panel_reconfig = false;
+	} else {
+		mdss_fb_free_fb_ion_memory(mfd);
+		if (mdss_fb_alloc_fb_ion_memory(mfd, info->fix.smem_len) < 0)
+			pr_err(EARLY_MEM_ALLOC_FAIL, mfd->index);
 	}
 
 	return ret;
@@ -3475,4 +3492,25 @@ int mdss_fb_suspres_panel(struct device *dev, void *data)
 				mfd->index, rc);
 	}
 	return rc;
+}
+
+static void mdss_fb_fillrect(struct fb_info *p, const struct fb_fillrect *rect)
+{
+	mdss_fb_pan_idle((struct msm_fb_data_type *) p->par);
+	cfb_fillrect(p, rect);
+	mdss_fb_pan_display(&p->var, p);
+}
+
+static void mdss_fb_copyarea(struct fb_info *p, const struct fb_copyarea *area)
+{
+	mdss_fb_pan_idle((struct msm_fb_data_type *) p->par);
+	cfb_copyarea(p, area);
+	mdss_fb_pan_display(&p->var, p);
+}
+
+static void mdss_fb_imageblit(struct fb_info *p, const struct fb_image *image)
+{
+	mdss_fb_pan_idle((struct msm_fb_data_type *) p->par);
+	cfb_imageblit(p, image);
+	mdss_fb_pan_display(&p->var, p);
 }
