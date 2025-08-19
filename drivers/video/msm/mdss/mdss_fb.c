@@ -76,6 +76,7 @@ static u32 mdss_fb_pseudo_palette[16] = {
 };
 
 static struct msm_mdp_interface *mdp_instance;
+static struct fb_fillrect brect;
 
 static int mdss_fb_register(struct msm_fb_data_type *mfd);
 static int mdss_fb_open(struct fb_info *info, int user);
@@ -95,7 +96,7 @@ static int mdss_fb_fbmem_ion_mmap(struct fb_info *info,
 		struct vm_area_struct *vma);
 static int mdss_fb_alloc_fb_ion_memory(struct msm_fb_data_type *mfd,
 		size_t size);
-static void mdss_fb_release_fences(struct msm_fb_data_type *mfd);
+static inline void mdss_fb_release_fences(struct msm_fb_data_type *mfd);
 static int __mdss_fb_sync_buf_done_callback(struct notifier_block *p,
 		unsigned long val, void *data);
 
@@ -697,6 +698,11 @@ static int mdss_fb_probe(struct platform_device *pdev)
 	struct mdss_panel_data *pdata;
 	struct fb_info *fbi;
 	int rc;
+	static int skip;
+
+	if (skip)
+		return -ENODEV;
+	skip = 1;
 
 	if (fbi_list_index >= MAX_FBI_LIST)
 		return -ENOMEM;
@@ -1280,6 +1286,8 @@ static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
 	case FB_BLANK_NORMAL:
 	case FB_BLANK_POWERDOWN:
 	default:
+		mdss_fb_fillrect(info, &brect);
+#if 0
 		pr_debug("blank powerdown called. cur mode=%d, req mode=%d\n",
 			cur_power_state, req_power_state);
 		if (mdss_fb_is_power_on(mfd) && mfd->mdp.off_fnc) {
@@ -1314,6 +1322,7 @@ static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
 			mfd->op_enable = true;
 			complete(&mfd->power_off_comp);
 		}
+#endif
 		break;
 	}
 	/* Notify listeners */
@@ -1906,6 +1915,11 @@ static int mdss_fb_register(struct msm_fb_data_type *mfd)
 	var->hsync_len = panel_info->lcdc.h_pulse_width;
 	var->pixclock = panel_info->clk_rate / 1000;
 
+	brect.dx = brect.dy = brect.color = 0;
+	brect.width = var->xres;
+	brect.height = var->yres;
+	brect.rop = ROP_COPY;
+
 	/*
 	 * Populate smem length here for uspace to get the
 	 * Framebuffer size when FBIO_FSCREENINFO ioctl is
@@ -2362,7 +2376,7 @@ void mdss_fb_signal_timeline(struct msm_sync_pt_data *sync_pt_data)
  *
  * Note: this should only be called during close or suspend sequence.
  */
-static void mdss_fb_release_fences(struct msm_fb_data_type *mfd)
+static inline void mdss_fb_release_fences(struct msm_fb_data_type *mfd)
 {
 	struct msm_sync_pt_data *sync_pt_data = &mfd->mdp_sync_pt_data;
 	int val;
