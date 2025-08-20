@@ -1963,10 +1963,8 @@ static int mdss_fb_register(struct msm_fb_data_type *mfd)
 	init_completion(&mfd->power_off_comp);
 	init_completion(&mfd->power_set_comp);
 	init_waitqueue_head(&mfd->commit_wait_q);
-	init_waitqueue_head(&mfd->idle_wait_q);
 	init_waitqueue_head(&mfd->ioctl_q);
 	init_waitqueue_head(&mfd->kickoff_wait_q);
-	init_waitqueue_head(&mfd->run_wait_q);
 
 	ret = fb_alloc_cmap(&fbi->cmap, 256, 0);
 	if (ret)
@@ -2470,11 +2468,12 @@ static int __mdss_fb_sync_buf_done_callback(struct notifier_block *p,
  */
 static int mdss_fb_pan_idle(struct msm_fb_data_type *mfd)
 {
+#if 0
 	atomic_set(&mfd->is_idling, 1);
 	wake_up_all(&mfd->commit_wait_q);
 	__wait_event(mfd->idle_wait_q, 1);
 	wake_up_all(&mfd->run_wait_q);
-
+#endif
 	return 0;
 }
 
@@ -2672,12 +2671,14 @@ static int __mdss_fb_display_thread(void *data)
 	while (1) {
 		wait_event(mfd->commit_wait_q,
 				(atomic_read(&mfd->commits_pending) ||
+#if 0
 				 atomic_read(&mfd->is_idling) ||
+#endif
 				 kthread_should_stop()));
 
 		if (kthread_should_stop())
 			break;
-
+#if 0
 		if (atomic_read(&mfd->is_idling)) {
 			while (atomic_read(&mfd->commits_pending)) {
 				ret = __mdss_fb_perform_commit(mfd);
@@ -2688,7 +2689,7 @@ static int __mdss_fb_display_thread(void *data)
 			__wait_event(mfd->run_wait_q, 1);
 			continue;
 		}
-
+#endif
 		ret = __mdss_fb_perform_commit(mfd);
 		atomic_dec(&mfd->commits_pending);
 	}
