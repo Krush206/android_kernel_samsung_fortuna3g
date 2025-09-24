@@ -365,4 +365,15 @@ config VMXNET3
 
 source "drivers/net/hyperv/Kconfig"
 
+config TRELAY
+	tristate "Trivial Ethernet Relay driver"
+	depends on INET
+	help
+	  This driver relays ethernet packets between two devices
+	  (similar to a bridge), but without any MAC address
+	  checks. This makes it possible to bridge client mode
+	  or ad-hoc mode wifi devices to ethernet VLANs, assuming
+	  the remote end uses the same source MAC address
+	  as the device that packets are supposed to exit from.
+
 endif # NETDEVICES
