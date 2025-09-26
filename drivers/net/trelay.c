@@ -15,7 +15,6 @@
  */
 #include <linux/module.h>
 #include <linux/list.h>
-#include <linux/mutex.h>
 #include <linux/netdevice.h>
 #include <linux/rtnetlink.h>
 #include <linux/debugfs.h>
