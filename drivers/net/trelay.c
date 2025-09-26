@@ -26,8 +26,51 @@ static struct dentry *debugfs_dir;
 struct trelay {
 	struct list_head list;
 	struct net_device *dev1, *dev2;
-	struct dentry *debugfs;
 	char name[];
+};
+
+static ssize_t trelay_list_read(struct file *file, char __user *ubuf,
+				size_t count, loff_t *ppos)
+{
+	struct trelay *tr;
+	size_t len, bytes;
+	char *kbuf;
+
+	len = 0;
+	rtnl_lock();
+	list_for_each_entry(tr, &trelay_devs, list)
+		len += strlen(tr->name) + 1;
+	if(*ppos >= len)
+	{
+		rtnl_unlock();
+
+		return 0;
+	}
+	kbuf = kmalloc(len, GFP_KERNEL);
+	len = 0;
+	list_for_each_entry(tr, &trelay_devs, list)
+	{
+		strcpy(kbuf + len, tr->name);
+		len += strlen(tr->name);
+		kbuf[len++] = '\n';
+	}
+	rtnl_unlock();
+	bytes = min(count, len - (size_t) *ppos);
+	if(copy_to_user(ubuf, kbuf + *ppos, bytes))
+	{
+		kfree(kbuf);
+
+		return -EFAULT;
+	}
+	kfree(kbuf);
+	*ppos += bytes;
+
+	return bytes;
+}
+
+static const struct file_operations fops_list = {
+	.owner = THIS_MODULE,
+	.read = trelay_list_read,
 };
 
 rx_handler_result_t trelay_handle_frame(struct sk_buff **pskb)
@@ -50,13 +93,7 @@ rx_handler_result_t trelay_handle_frame(struct sk_buff **pskb)
 	return RX_HANDLER_CONSUMED;
 }
 
-static int trelay_open(struct inode *inode, struct file *file)
-{
-	file->private_data = inode->i_private;
-	return 0;
-}
-
-static int trelay_do_remove(struct trelay *tr)
+static void trelay_do_remove(struct trelay *tr)
 {
 	list_del(&tr->list);
 
@@ -66,10 +103,7 @@ static int trelay_do_remove(struct trelay *tr)
 	netdev_rx_handler_unregister(tr->dev1);
 	netdev_rx_handler_unregister(tr->dev2);
 
-	debugfs_remove_recursive(tr->debugfs);
 	kfree(tr);
-
-	return 0;
 }
 
 static struct trelay *trelay_find(struct net_device *dev)
@@ -105,22 +139,32 @@ out:
 static ssize_t trelay_remove_write(struct file *file, const char __user *ubuf,
 				   size_t count, loff_t *ppos)
 {
-	struct trelay *tr = file->private_data;
-	int ret;
+	struct trelay *tr;
+	char *kbuf, *sub;
 
+	kbuf = kmalloc(count + 1, GFP_KERNEL);
+	strncpy(kbuf, ubuf, count);
+	sub = strchr(kbuf, '\n');
+	if(sub != NULL)
+		*sub = '\0';
 	rtnl_lock();
-	ret = trelay_do_remove(tr);
+	list_for_each_entry(tr, &trelay_devs, list)
+		if (strcmp(tr->name, kbuf) == 0)
+		{
+			trelay_do_remove(tr);
+			rtnl_unlock();
+			kfree(kbuf);
+
+			return count;
+		}
 	rtnl_unlock();
+	kfree(kbuf);
 
-	if (ret < 0)
-		 return ret;
-
-	return count;
+	return -EINVAL;
 }
 
 static const struct file_operations fops_remove = {
 	.owner = THIS_MODULE,
-	.open = trelay_open,
 	.write = trelay_remove_write,
 	.llseek = default_llseek,
 };
@@ -169,13 +213,11 @@ static int trelay_do_add(char *name, char *devn1, char *devn2)
 	tr->dev2 = dev2;
 	list_add_tail(&tr->list, &trelay_devs);
 
-	tr->debugfs = debugfs_create_dir(name, debugfs_dir);
-	debugfs_create_file("remove", S_IWUSR, tr->debugfs, tr, &fops_remove);
+	rcu_read_unlock();
+	rtnl_unlock();
 	ret = 0;
 
 out:
-	rcu_read_unlock();
-	rtnl_unlock();
 	if (ret < 0)
 		kfree(tr);
 
@@ -240,7 +282,21 @@ static int __init trelay_init(void)
 	if (!debugfs_dir)
 		return -ENOMEM;
 
-	debugfs_create_file("add", S_IWUSR, debugfs_dir, NULL, &fops_add);
+	debugfs_create_file("add",
+			    S_IWUSR,
+			    debugfs_dir,
+			    NULL,
+			    &fops_add);
+	debugfs_create_file("remove",
+			    S_IWUSR,
+			    debugfs_dir,
+			    NULL,
+			    &fops_remove);
+	debugfs_create_file("list",
+			    S_IWUSR,
+			    debugfs_dir,
+			    NULL,
+			    &fops_list);
 
 	ret = register_netdevice_notifier(&tr_dev_notifier);
 	if (ret < 0)
