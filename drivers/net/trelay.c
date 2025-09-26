@@ -47,6 +47,8 @@ static ssize_t trelay_list_read(struct file *file, char __user *ubuf,
 		return 0;
 	}
 	kbuf = kmalloc(len, GFP_KERNEL);
+	if(kbuf == NULL)
+		return -ENOMEM;
 	len = 0;
 	list_for_each_entry(tr, &trelay_devs, list)
 	{
@@ -143,6 +145,8 @@ static ssize_t trelay_remove_write(struct file *file, const char __user *ubuf,
 	char *kbuf, *sub;
 
 	kbuf = kmalloc(count + 1, GFP_KERNEL);
+	if(kbuf == NULL)
+		return -ENOMEM;
 	strncpy(kbuf, ubuf, count);
 	sub = strchr(kbuf, '\n');
 	if(sub != NULL)
