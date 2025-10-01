@@ -95,6 +95,9 @@ static int mdss_fb_fbmem_ion_mmap(struct fb_info *info,
 		struct vm_area_struct *vma);
 static int mdss_fb_alloc_fb_ion_memory(struct msm_fb_data_type *mfd,
 		size_t size);
+#if 0
+static void mdss_fb_release_fences(struct msm_fb_data_type *mfd);
+#endif
 static int __mdss_fb_sync_buf_done_callback(struct notifier_block *p,
 		unsigned long val, void *data);
 
