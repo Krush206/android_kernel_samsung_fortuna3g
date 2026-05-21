@@ -1,4 +1,4 @@
-/* Copyright (c) 2014, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2014-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -31,6 +31,7 @@
 		i2c4 = &i2c_4;
 		i2c5 = &i2c_5;
 		i2c6 = &i2c_6;
+		i2c21 = &i2c_21;
 //		spi0 = &spi_0;
 		spi5 = &spi_5;
 	};
@@ -43,7 +44,7 @@
 			linux,reserve-contiguous-region;
 			linux,reserve-region;
 			linux,remove-completely;
-			reg = <0x0 0x85A00000 0x0 0x0E00000>;
+			reg = <0x0 0x85500000 0x0 0x1300000>;
 			label = "external_image_mem";
 		};
 
@@ -92,7 +93,7 @@
 		cont_splash_mem: splash_region@83000000 {
 			linux,reserve-contiguous-region;
 			linux,reserve-region;
-			reg = <0x0 0x83000000 0x0 0x2000000>;
+			reg = <0x0 0x8E000000 0x0 0x1400000>;
 			label = "cont_splash_mem";
 		};
 	};
@@ -206,7 +207,7 @@
 		reg = <0xb017000 0x1000>;
 		reg-names = "wdt-base";
 		interrupts = <0 3 0>, <0 4 0>;
-		qcom,bark-time = <11000>;
+		qcom,bark-time = <20000>;
 		qcom,pet-time = <10000>;
 		qcom,ipi-ping;
 	};
@@ -470,7 +471,7 @@
 		interrupts = <0 145 0 0 146 0>;
 		interrupt-names = "wcnss_wlantx_irq", "wcnss_wlanrx_irq";
 
-		qcom,pronto-vddmx-supply = <&pm8916_l3>;
+		qcom,pronto-vddmx-supply = <&pm8916_l3_corner_ao>;
 		qcom,pronto-vddcx-supply = <&pm8916_s2_corner>;
 		qcom,pronto-vddpx-supply = <&pm8916_l7>;
 		qcom,iris-vddxo-supply   = <&pm8916_l7>;
@@ -489,8 +490,10 @@
 		clocks = <&clock_rpm clk_xo_wlan_clk>,
 			 <&clock_rpm clk_rf_clk2>,
 			 <&clock_debug clk_gcc_debug_mux>,
-			 <&clock_gcc clk_wcnss_m_clk>;
-		clock-names = "xo", "rf_clk", "measure", "wcnss_debug";
+			 <&clock_gcc clk_wcnss_m_clk>,
+			 <&clock_gcc clk_gcc_snoc_qosgen_clk>;
+		clock-names = "xo", "rf_clk", "measure", "wcnss_debug",
+				"snoc_qosgen";
 
 		qcom,has-autodetect-xo;
 		qcom,is-pronto-vt;
@@ -514,7 +517,7 @@
 		compatible = "qcom,msm-thermal";
 		qcom,sensor-id = <5>;
 		qcom,poll-ms = <250>;
-		qcom,limit-temp = <60>;
+		qcom,limit-temp = <70>;
 		qcom,temp-hysteresis = <10>;
 		qcom,freq-step = <2>;
 		qcom,freq-control-mask = <0xff>;
@@ -577,6 +580,7 @@
 		interrupt-names = "slimbus_irq", "slimbus_bam_irq";
 		qcom,apps-ch-pipes = <0x600000>;
 		qcom,ea-pc = <0x140>;
+		qcom,subsys-name = "modem";
 		status = "disabled";
 	};
 
@@ -689,6 +693,8 @@
                 qcom,use-sw-aes-xts-algo;
                 qcom,use-sw-aes-ccm-algo;
                 qcom,use-sw-ahash-algo;
+		qcom,use-sw-hmac-algo;
+		qcom,use-sw-aead-algo;
 		status = "disabled";
 		qcom,ce-opp-freq = <100000000>;
 	};
@@ -721,7 +727,7 @@
 
 	qcom_seecom: qseecom@86000000 {
 		compatible = "qcom,qseecom";
-		reg = <0x85A00000 0x500000>;
+		reg = <0x85500000 0x700000>;
 		reg-names = "secapp-region";
 		qcom,disk-encrypt-pipe-pair = <2>;
 		qcom,hlos-ce-hw-instance = <0>;
@@ -947,6 +953,30 @@
 		qcom,master-id = <86>;
 		};
 */
+	i2c_21: i2c@78b7000 { /* BLSP1 QUP3 */
+		compatible = "qcom,i2c-msm-v2";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		reg-names = "qup_phys_addr", "bam_phys_addr";
+		reg = <0x78b7000 0x1000>,
+		      <0x7884000 0x23000>;
+		interrupt-names = "qup_irq", "bam_irq";
+		interrupts = <0 97 0>, <0 238 0>;
+		qcom,clk-freq-out = <400000>;
+		qcom,clk-freq-in  = <19200000>;
+		clock-names = "iface_clk", "core_clk";
+		clocks = <&clock_gcc clk_gcc_blsp1_ahb_clk>,
+			 <&clock_gcc clk_gcc_blsp1_qup3_i2c_apps_clk>;
+
+		pinctrl-names = "i2c_active", "i2c_sleep";
+		pinctrl-0 = <&i2c_21_active>;
+		pinctrl-1 = <&i2c_21_sleep>;
+		qcom,noise-rjct-scl = <0>;
+		qcom,noise-rjct-sda = <0>;
+		qcom,bam-pipe-idx-cons = <8>;
+		qcom,bam-pipe-idx-prod = <9>;
+		qcom,master-id = <86>;
+	};
 
 	i2c_4: i2c@78b8000 { /* BLSP1 QUP4 */
 		compatible = "qcom,i2c-msm-v2";
@@ -1072,7 +1102,16 @@
 		interrupt-names = "hc_irq", "pwr_irq";
 
 		qcom,bus-width = <8>;
-		qcom,cpu-dma-latency-us = <200>;
+
+		qcom,qos-planes = <3>;
+		qcom,cpu-dma-latency-us = <2 401 701>;
+		qcom,cpu-dma-latency-us-r = <2 401 701>;
+		qcom,cpu-dma-latency-us-w = <2 401 701>;
+		qcom,cpu-affinity-r = "affine_cores";
+		qcom,cpu-affinity-mask-r = <0xf0>;
+
+		qcom,modified-dynamic-qos;
+
 		qcom,msm-bus,name = "sdhc1";
 		qcom,msm-bus,num-cases = <8>;
 		qcom,msm-bus,num-paths = <1>;
@@ -1125,7 +1164,7 @@
 			 <&clock_gcc clk_gcc_sdcc2_apps_clk>;
 		clock-names = "iface_clk", "core_clk";
 
-		qcom,clk-rates = <400000 25000000 50000000 100000000 177770000>;
+		qcom,clk-rates = <400000 25000000 50000000 100000000 200000000>;
 
 		status = "disabled";
 	};
@@ -1415,7 +1454,12 @@
 			compatible = "qcom,msm-dai-q6-dev";
 			qcom,msm-dai-q6-dev-id = <12289>;
 		};
-
+		
+		bt_a2dp_rx: qcom,msm-dai-q6-bt-a2dp-rx {
+			compatible = "qcom,msm-dai-q6-dev";
+			qcom,msm-dai-q6-dev-id = <12290>;
+		};
+		
 		int_fm_rx: qcom,msm-dai-q6-int-fm-rx {
 			compatible = "qcom,msm-dai-q6-dev";
 			qcom,msm-dai-q6-dev-id = <12292>;
@@ -1470,6 +1514,20 @@
 	hostless: qcom,msm-pcm-hostless {
 		compatible = "qcom,msm-pcm-hostless";
 	};
+	
+	dai_pri_auxpcm: qcom,msm-pri-auxpcm {
+		compatible = "qcom,msm-auxpcm-dev";
+		qcom,msm-cpudai-auxpcm-mode = <0>, <0>;
+		qcom,msm-cpudai-auxpcm-sync = <1>, <1>;
+		qcom,msm-cpudai-auxpcm-frame = <5>, <4>;
+		qcom,msm-cpudai-auxpcm-quant = <2>, <2>;
+		qcom,msm-cpudai-auxpcm-num-slots = <1>, <1>;
+		qcom,msm-cpudai-auxpcm-slot-mapping = <1>, <1>;
+		qcom,msm-cpudai-auxpcm-data = <0>, <0>;
+		qcom,msm-cpudai-auxpcm-pcm-clk-rate = <2048000>, <2048000>;
+		qcom,msm-auxpcm-interface = "primary";
+	};
+	
 	qcom,vidc@1d00000 {
 		compatible = "qcom,msm-vidc";
 		reg = <0x01d00000 0xff000>;
@@ -1485,7 +1543,6 @@
 		clock-names = "core_clk", "core0_clk", "core1_clk", "iface_clk", "bus_clk";
 		qcom,clock-configs = <0x1 0x0 0x0 0x0 0x0>;
 		qcom,sw-power-collapse;
-		qcom,enable-minimum-voting;
 		qcom,load-freq-tbl =
 			<489600 266670000 0x0c000000>, /* HEVC  decoder 1080p 60fps  */
 			<489600 266670000 0x030fcfff>, /* Legacy decoder 1080p 60fps  */
@@ -1571,6 +1628,16 @@
 					<63 512 653312 572826>,
 					<63 512 1306624 2291405>;
 				qcom,bus-configs = <0x0c000000>;
+			};
+			qcom,msm-bus-client@3 {
+				qcom,msm-bus,name = "venus-arm9-ddr";
+				qcom,msm-bus,num-cases = <2>;
+				qcom,msm-bus,num-paths = <1>;
+				qcom,msm-bus,vectors-KBps =
+					<63 512 0 0>,
+					<63 512 1000 1000>;
+				qcom,bus-configs = <0x00000000>;
+				qcom,bus-passive;
 			};
 		};
 	};

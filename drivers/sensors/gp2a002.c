@@ -47,12 +47,35 @@
 #define REGS_OPMOD		0x4 /* Write Only */
 #define REGS_CON		0x6 /* Write Only */
 
-#define PROX_NONDETECT			0x2F
-#define PROX_DETECT				0x0F
+#if defined(CONFIG_SENSORS_GP2A_MODE_A) || defined(CONFIG_SENSORS_BMA2X2_MODE_A)
+#define PROX_NONDETECT		0xC2
+#define PROX_DETECT		0xC2
+#define PROX_NONDETECT_MODE1	0xC8
+#define PROX_DETECT_MODE1	0xC8
+#define PROX_NONDETECT_MODE2	0xCB
+#define PROX_DETECT_MODE2	0xCB
+#elif defined(CONFIG_SENSORS_GP2A_MODE_B1) || defined(CONFIG_SENSORS_BMA2X2_MODE_B1)
+#define PROX_NONDETECT		0x40
+#define PROX_DETECT		0x20
 #define PROX_NONDETECT_MODE1	0x43
-#define PROX_DETECT_MODE1		0x28
+#define PROX_DETECT_MODE1	0x28
 #define PROX_NONDETECT_MODE2	0x48
-#define PROX_DETECT_MODE2		0x42
+#define PROX_DETECT_MODE2	0x42
+#elif defined(CONFIG_SENSORS_GP2A_MODE_B15) || defined(CONFIG_SENSORS_PROX_NEWMODE2)
+#define PROX_NONDETECT		0x2F
+#define PROX_DETECT		0x0D
+#define PROX_NONDETECT_MODE1	0x43
+#define PROX_DETECT_MODE1	0x28
+#define PROX_NONDETECT_MODE2	0x48
+#define PROX_DETECT_MODE2	0x42
+#else
+#define PROX_NONDETECT		0x2F
+#define PROX_DETECT		0x0F
+#define PROX_NONDETECT_MODE1	0x41
+#define PROX_DETECT_MODE1	0x2E
+#define PROX_NONDETECT_MODE2	0x4E
+#define PROX_DETECT_MODE2	0x2B
+#endif
 #define OFFSET_FILE_PATH		"/efs/FactoryApp/prox_cal"
 
 #define PROXIMITY	1
@@ -84,7 +107,6 @@ struct gp2a_data {
 	u8 detect;
 	u8 nondetect;
 	struct regulator *leda_3p0;
-
 };
 
 int gp2a_i2c_read(struct gp2a_data *gp2a, u8 reg, u8 *val)
@@ -402,55 +424,60 @@ static void gp2a_pmic_leda_onoff(struct gp2a_data *info, int onoff)
 static int gp2a_regulator_onoff(struct device *dev, bool onoff)
 {
 	struct regulator *gp2a_vio;
+#if defined(CONFIG_SENSORS_GP2A_VDD)
 	struct regulator *gp2a_vdd;
+#endif
 	int ret;
 
 	pr_info("%s %s\n", __func__, (onoff) ? "on" : "off");
 
+#if defined(CONFIG_SENSORS_GP2A_VDD)
 	gp2a_vdd = devm_regulator_get(dev, "gp2a-vdd");
 	if (IS_ERR(gp2a_vdd)) {
 		pr_err("[SENSOR]: %s - cannot get gp2a_vdd\n", __func__);
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto err_vdd;
 	}
+#endif
 	gp2a_vio = devm_regulator_get(dev, "gp2a-vio");
 	if (IS_ERR(gp2a_vio)) {
 		pr_err("%s: cannot get gp2a_vio\n", __func__);
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto err_vio;
 	}
 
 	if (onoff) {
+#if defined(CONFIG_SENSORS_GP2A_VDD)
 		ret = regulator_enable(gp2a_vdd);
-		if (ret) {
-			pr_err("%s: enable gp2a_vdd failed, rc=%d\n",
-				__func__, ret);
-			return ret;
-		}
+		if (ret)
+			pr_err("%s: enable vdd failed (%d)\n", __func__, ret);
+#endif
 		ret = regulator_enable(gp2a_vio);
-		if (ret) {
-			pr_err("%s: enable gp2a_vio failed, rc=%d\n",
-				__func__, ret);
-			return ret;
-		}
+		if (ret)
+			pr_err("%s: enable vio failed (%d)\n", __func__, ret);
+
 	} else {
+#if defined(CONFIG_SENSORS_GP2A_VDD)
 		ret = regulator_disable(gp2a_vdd);
-		if (ret) {
-			pr_err("%s: disable gp2a_vdd failed, rc=%d\n",
-				__func__, ret);
-			return ret;
-		}
+		if (ret)
+			pr_err("%s: disable vdd failed (%d)\n", __func__, ret);
+#endif
+
 		ret = regulator_disable(gp2a_vio);
-		if (ret) {
-			pr_err("%s: disable gp2a_vio failed, rc=%d\n",
-				__func__, ret);
-			return ret;
-		}
+		if (ret)
+			pr_err("%s: disable vio failed (%d)\n", __func__, ret);
+
 	}
 
-	devm_regulator_put(gp2a_vdd);
 	devm_regulator_put(gp2a_vio);
+err_vio:
+#if defined(CONFIG_SENSORS_GP2A_VDD)
+	devm_regulator_put(gp2a_vdd);
+err_vdd:
+#endif
 	msleep(20);
 
-	return 0;
+	return ret;
 }
 
 static ssize_t proximity_enable_show(struct device *dev,

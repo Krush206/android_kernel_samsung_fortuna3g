@@ -141,6 +141,9 @@ struct console {
 	for (con = console_drivers; con != NULL; con = con->next)
 
 extern int console_set_on_cmdline;
+#ifdef CONFIG_PANIC_ON_RT_THROTTLING
+extern int console_null_state;
+#endif
 extern struct console *early_console;
 
 extern int add_preferred_console(char *name, int idx, char *options);
@@ -153,6 +156,7 @@ extern int console_trylock(void);
 extern void console_unlock(void);
 extern void console_conditional_schedule(void);
 extern void console_unblank(void);
+extern void console_flush_on_panic(void);
 extern struct tty_driver *console_device(int *);
 extern void console_stop(struct console *);
 extern void console_start(struct console *);

@@ -83,6 +83,9 @@ static int nrpacks = 8;		/* max. number of packets per urb */
 static int device_setup[SNDRV_CARDS]; /* device parameter for this card */
 static bool ignore_ctl_error;
 static bool autoclock = true;
+#ifndef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
+struct switch_dev *usbaudiosdev;
+#endif
 
 module_param_array(index, int, NULL, 0444);
 MODULE_PARM_DESC(index, "Index value for the USB audio adapter.");
@@ -205,7 +208,6 @@ static int snd_usb_create_stream(struct snd_usb_audio *chip, int ctrlif, int int
 	if (! snd_usb_parse_audio_interface(chip, interface)) {
 		usb_set_interface(dev, interface, 0); /* reset the current interface */
 		usb_driver_claim_interface(&usb_audio_driver, iface, (void *)-1L);
-		return -EINVAL;
 	}
 
 	return 0;
@@ -306,6 +308,9 @@ static int snd_usb_create_streams(struct snd_usb_audio *chip, int ctrlif)
 		break;
 	}
 	}
+#ifndef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
+	switch_set_state(usbaudiosdev, 1);
+#endif
 	return 0;
 }
 
@@ -630,6 +635,9 @@ static void snd_usb_audio_disconnect(struct usb_device *dev,
 	} else {
 		mutex_unlock(&register_mutex);
 	}
+#ifndef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
+	switch_set_state(usbaudiosdev, 0);
+#endif
 }
 
 /*
@@ -767,17 +775,38 @@ static struct usb_driver usb_audio_driver = {
 
 static int __init snd_usb_audio_init(void)
 {
+#ifndef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
+	int err;
+#endif
 	if (nrpacks < 1 || nrpacks > MAX_PACKS) {
 		printk(KERN_WARNING "invalid nrpacks value.\n");
 		return -EINVAL;
 	}
 
+#ifndef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
+	usbaudiosdev = kzalloc(sizeof(*usbaudiosdev), GFP_KERNEL);
+	if (!usbaudiosdev) {
+		pr_err("Usb audio device memory allocation failed.\n");
+		return -ENOMEM;
+	}
+
+	usbaudiosdev->name = "usb_audio";
+
+	err = switch_dev_register(usbaudiosdev);
+	if (err)
+		pr_err("Usb-audio switch registration failed\n");
+	else
+		pr_debug("usb hs_detected\n");
+#endif
 	return usb_register(&usb_audio_driver);
 }
 
 static void __exit snd_usb_audio_cleanup(void)
 {
 	usb_deregister(&usb_audio_driver);
+#ifndef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
+	kfree(usbaudiosdev);
+#endif
 }
 
 module_init(snd_usb_audio_init);

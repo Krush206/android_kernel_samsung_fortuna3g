@@ -41,27 +41,48 @@
  * every single port-type of the following cable names. Please choose cable
  * names that are actually used in your extcon device.
  */
-const char extcon_cable_name[][CABLE_NAME_MAX + 1] = {
+const char *extcon_cable_name[CABLE_NAME_MAX + 1] = {
 	[EXTCON_USB]		= "USB",
 	[EXTCON_USB_HOST]	= "USB-Host",
+	[EXTCON_USB_HOST_5V]	= "USB-Host-5V",
+	[EXTCON_HV_PREPARE]	= "High Voltage Prepare",
 	[EXTCON_TA]		= "TA",
-	[EXTCON_FAST_CHARGER]	= "Fast-charger",
-	[EXTCON_SLOW_CHARGER]	= "Slow-charger",
+	[EXTCON_HV_TA]		= "High Voltage TA",
+	[EXTCON_HV_TA_ERR]	= "Error HV TA",
+	[EXTCON_UNDEFINED_CHARGER]	= "Undefined-Charger",
+	[EXTCON_CEA936_CHG]	= "CEA936",
 	[EXTCON_CHARGE_DOWNSTREAM]	= "Charge-downstream",
-	[EXTCON_HDMI]		= "HDMI",
+#if defined(CONFIG_MUIC_DET_JACK)
+	[EXTCON_EARJACK]	= "Earjack",
+#endif
 	[EXTCON_MHL]		= "MHL",
-	[EXTCON_DVI]		= "DVI",
-	[EXTCON_VGA]		= "VGA",
-	[EXTCON_DOCK]		= "Dock",
-	[EXTCON_LINE_IN]	= "Line-in",
-	[EXTCON_LINE_OUT]	= "Line-out",
-	[EXTCON_MIC_IN]		= "Microphone",
-	[EXTCON_HEADPHONE_OUT]	= "Headphone",
-	[EXTCON_SPDIF_IN]	= "SPDIF-in",
-	[EXTCON_SPDIF_OUT]	= "SPDIF-out",
-	[EXTCON_VIDEO_IN]	= "Video-in",
-	[EXTCON_VIDEO_OUT]	= "Video-out",
-	[EXTCON_MECHANICAL]	= "Mechanical",
+	[EXTCON_MHL_VB]		= "MHL-VB",
+	[EXTCON_DESKDOCK]	= "Desk-dock",
+	[EXTCON_DESKDOCK_VB]	= "Desk-dock-VB",
+	[EXTCON_CARDOCK]	= "Car-dock",
+	[EXTCON_CARDOCK_VB]	= "Car-dock-VB",
+	[EXTCON_AUDIODOCK]	= "Audio-dock",
+	[EXTCON_SMARTDOCK]	= "Smart-dock",
+	[EXTCON_SMARTDOCK_TA]	= "Smart-dock-TA",
+	[EXTCON_SMARTDOCK_USB]	= "Smart-dock-USB",
+	[EXTCON_JIG_UARTOFF]	= "JIG-UART-OFF",
+	[EXTCON_JIG_UARTOFF_VB]	= "JIG-UART-OFF-VB",
+	[EXTCON_JIG_UARTON]	= "JIG-UART-ON",
+	[EXTCON_JIG_USBOFF]	= "JIG-USB-OFF",
+	[EXTCON_JIG_USBON]	= "JIG-USB-ON",
+	[EXTCON_INCOMPATIBLE]	= "Incompatible-TA",
+	[EXTCON_CHARGING_CABLE]	= "Charging-Cable",
+#if defined(CONFIG_MUIC_MAX77804K_SUPPORT_HMT_DETECTION)
+	[EXTCON_HMT]		= "HMT",
+#endif
+#if defined(CONFIG_MUIC_SUPPORT_LANHUB)
+	[EXTCON_LANHUB]		= "Lan-Hub",
+	[EXTCON_LANHUB_TA]	= "Lan-Hub-TA",
+#endif
+	[EXTCON_HV_TA_1A]	= "High Voltage 1A Type Cable",
+	[EXTCON_UNKNOWN]	= "Unknown-Device",
+	[EXTCON_NONE]		= "None",
+	NULL,
 };
 
 static struct class *extcon_class;
@@ -560,7 +581,7 @@ static int create_extcon_class(void)
 		extcon_class->dev_attrs = extcon_attrs;
 
 #if defined(CONFIG_ANDROID)
-		switch_class = class_compat_register("switch");
+		switch_class = class_compat_register("extcon-switch");
 		if (WARN(!switch_class, "cannot allocate"))
 			return -ENOMEM;
 #endif /* CONFIG_ANDROID */

@@ -125,6 +125,8 @@ int ktd2692_write_data(unsigned data)
 void ktd2692_flash_on(unsigned data){
 	int ret;
 	unsigned long flags = 0;
+	struct pinctrl *pinctrl;
+
 	if(data == 0){
 		ret = gpio_request(global_ktd2692data->flash_control, "ktd2692_led_control");
 		if (ret) {
@@ -142,8 +144,16 @@ void ktd2692_flash_on(unsigned data){
 			gpio_free(global_ktd2692data->flash_control);
 			printk("<ktd2692_flash_on> KTD2692-TORCH OFF. : X(%d)\n", data);
 
+			pinctrl = devm_pinctrl_get_select(ktd2692_dev, "front_fled_sleep");
+			if (IS_ERR(pinctrl))
+				pr_err("%s: flash %s pins are not configured\n", __func__, "front_fled_sleep");
+
 		}
 	}else{
+		pinctrl = devm_pinctrl_get_select(ktd2692_dev, "front_fled_default");
+		if (IS_ERR(pinctrl))
+			pr_err("%s: flash %s pins are not configured\n", __func__, "front_fled_default");
+
 		ret = gpio_request(global_ktd2692data->flash_control, "ktd2692_led_control");
 		if (ret) {
 			printk("Failed to requeset ktd2692_led_control\n");
@@ -203,12 +213,12 @@ ssize_t ktd2692_store(struct device *dev,
 			printk("KTD2692-TORCH OFF. : X(%d)\n", value);
 		}
 
-		pinctrl = devm_pinctrl_get_select(ktd2692_dev, "is");
+		pinctrl = devm_pinctrl_get_select(ktd2692_dev, "front_fled_sleep");
 		if (IS_ERR(pinctrl))
 			pr_err("%s: flash %s pins are not configured\n", __func__, "is");
 
 	} else if(value == 100){
-		pinctrl = devm_pinctrl_get_select(ktd2692_dev, "host");
+		pinctrl = devm_pinctrl_get_select(ktd2692_dev, "front_fled_default");
 		if (IS_ERR(pinctrl))
 			pr_err("%s: flash %s pins are not configured\n", __func__, "host");
 
@@ -239,7 +249,7 @@ ssize_t ktd2692_store(struct device *dev,
 			printk("KTD2692-TORCH ON. : X(%d)\n", value);
 	}
 
-	if (!IS_ERR(pinctrl))
+	if ((value <= 0 || value == 100) && !IS_ERR(pinctrl))
 		devm_pinctrl_put(pinctrl);
 
 	return count;
@@ -269,7 +279,11 @@ static int ktd2692_parse_dt(struct device *dev,
 	pdata->LVP_Voltage = KTD2692_DISABLE_LVP;
 	pdata->flash_timeout = KTD2692_TIMER_1049ms;	/* default */
 	pdata->min_current_value = KTD2692_MIN_CURRENT_240mA;
+#if defined(CONFIG_SEC_J75_PROJECT)
+	pdata->movie_current_value = KTD2692_MOVIE_CURRENT3;
+#else
 	pdata->movie_current_value = KTD2692_MOVIE_CURRENT4;
+#endif
 	pdata->factory_movie_current_value = KTD2692_MOVIE_CURRENT10;
 	pdata->flash_current_value = KTD2692_FLASH_CURRENT16;
 	pdata->mode_status = KTD2692_DISABLES_MOVIE_FLASH_MODE;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2013 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2013, 2016 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -97,6 +97,7 @@ typedef enum eMgmtFrmDropReason
     eMGMT_DROP_SCAN_MODE_FRAME,
     eMGMT_DROP_NON_SCAN_MODE_FRAME,
     eMGMT_DROP_INVALID_SIZE,
+    eMGMT_DROP_SPURIOUS_FRAME,
 }tMgmtFrmDropReason;
 
 
@@ -126,6 +127,8 @@ void limDumpInit(tpAniSirGlobal pMac);
 extern void limCleanup(tpAniSirGlobal);
 /// Function to post messages to LIM thread
 extern tANI_U32  limPostMsgApi(tpAniSirGlobal, tSirMsgQ *);
+tANI_U32  limPostMsgApiHighPri(tpAniSirGlobal, tSirMsgQ *);
+
 /**
  * Function to process messages posted to LIM thread
  * and dispatch to various sub modules within LIM module.
@@ -188,9 +191,23 @@ tSirRetStatus limUpdateGlobalChannelBonding(tpAniSirGlobal pMac, tHalBitVal cbBi
 
 void limHandleLowRssiInd(tpAniSirGlobal pMac);
 void limHandleBmpsStatusInd(tpAniSirGlobal pMac);
+#ifdef WLAN_FEATURE_APFIND
+void limHandleAPFindInd(tpAniSirGlobal pMac);
+#endif
 void limHandleMissedBeaconInd(tpAniSirGlobal pMac, tpSirMsgQ pMsg);
 tMgmtFrmDropReason limIsPktCandidateForDrop(tpAniSirGlobal pMac, tANI_U8 *pRxPacketInfo, tANI_U32 subType);
+boolean limIsDeauthDiassocForDrop(tpAniSirGlobal pMac,
+                                          tANI_U8 *pRxPacketInfo);
+#ifdef WLAN_FEATURE_11W
+bool lim_is_assoc_req_for_drop(tpAniSirGlobal mac, uint8_t *rx_pkt_info);
+#endif
 void limMicFailureInd(tpAniSirGlobal pMac, tpSirMsgQ pMsg);
+
+void limProcessLostLinkParamsInd(tpAniSirGlobal pMac, tpSirMsgQ pMsg);
+void limUpdateLostLinkParams(tpAniSirGlobal pMac,
+                   tpPESession psessionEntry, tANI_U8 *pRxPacketInfo);
+
+
 /* ----------------------------------------------------------------------- */
 // These used to be in DPH
 extern void limSetBssid(tpAniSirGlobal pMac, tANI_U8 *bssId);

@@ -141,14 +141,7 @@ struct cpufreq_interactive_tunables {
 	 * frequency.
 	 */
 	unsigned int max_freq_hysteresis;
-#if defined(CONFIG_ARCH_MSM8929)
-	unsigned int lpm_disable_freq;
-#endif
 };
-
-#if defined(CONFIG_ARCH_MSM8929)
-extern int lpm_set_mode(u8 cpu_mask, u32 power_level, bool on);
-#endif
 
 /* For cases where we have single governor instance for system */
 static struct cpufreq_interactive_tunables *common_tunables;
@@ -408,6 +401,7 @@ static void cpufreq_interactive_timer(unsigned long data)
 	unsigned int index;
 	unsigned long flags;
 	bool boosted;
+	struct cpufreq_govinfo int_info;
 
 	if (!down_read_trylock(&pcpu->enable_sem))
 		return;
@@ -417,19 +411,6 @@ static void cpufreq_interactive_timer(unsigned long data)
 	spin_lock_irqsave(&pcpu->load_lock, flags);
 	pcpu->last_evaluated_jiffy = get_jiffies_64();
 	now = update_load(data);
-#if defined(CONFIG_ARCH_MSM8929)
-	/*
-	* We will use way of original interactive governor calculation on the MSM8929 project
-	* Instead of using scheduler load.
-	*/
-	delta_time = (unsigned int)
-			(now - pcpu->cputime_speedadj_timestamp);
-	cputime_speedadj = pcpu->cputime_speedadj;
-	spin_unlock_irqrestore(&pcpu->load_lock, flags);
-	if (WARN_ON_ONCE(!delta_time))
-		goto rearm;
-	do_div(cputime_speedadj, delta_time);
-#else
 	if (tunables->use_sched_load) {
 		/*
 		 * Unlock early to avoid deadlock.
@@ -458,13 +439,18 @@ static void cpufreq_interactive_timer(unsigned long data)
 			goto rearm;
 		do_div(cputime_speedadj, delta_time);
 	}
-#endif
+
+	loadadjfreq = (unsigned int)cputime_speedadj * 100;
+
+	int_info.cpu = data;
+	int_info.load = loadadjfreq / pcpu->policy->max;
+	int_info.sampling_rate_us = tunables->timer_rate;
+	atomic_notifier_call_chain(&cpufreq_govinfo_notifier_list,
+					CPUFREQ_LOAD_CHANGE, &int_info);
 
 	spin_lock_irqsave(&pcpu->target_freq_lock, flags);
-	loadadjfreq = (unsigned int)cputime_speedadj * 100;
 	cpu_load = loadadjfreq / pcpu->policy->cur;
 	boosted = tunables->boost_val || now < tunables->boostpulse_endtime;
-	cpufreq_notify_utilization(pcpu->policy, cpu_load);
 
 	if (cpu_load >= tunables->go_hispeed_load || boosted) {
 		if (pcpu->policy->cur < tunables->hispeed_freq) {
@@ -555,7 +541,7 @@ static void cpufreq_interactive_timer(unsigned long data)
 	spin_lock_irqsave(&speedchange_cpumask_lock, flags);
 	cpumask_set_cpu(data, &speedchange_cpumask);
 	spin_unlock_irqrestore(&speedchange_cpumask_lock, flags);
-	wake_up_process(speedchange_task);
+	wake_up_process_no_notif(speedchange_task);
 
 rearm_if_notmax:
 	/*
@@ -655,13 +641,6 @@ static int cpufreq_interactive_speedchange_task(void *data)
 	unsigned long flags;
 	struct cpufreq_interactive_cpuinfo *pcpu;
 
-#if defined(CONFIG_ARCH_MSM8929)
-	struct cpufreq_interactive_tunables *tunables;
-	u8 cpu_mask=0x01;
-	//masking 0x00000001:WFI, 0x00000002:SPC, 0x00000003:WFI+SPC, 0x00000004:PC, 0x00000005:WFI+PC, 0x00000006:SPC+PC, 0x00000007:WFI+SPC+PC
-	u32 power_level_mask=0x00000006;
-#endif
-
 	while (1) {
 		set_current_state(TASK_INTERRUPTIBLE);
 		spin_lock_irqsave(&speedchange_cpumask_lock, flags);
@@ -706,17 +685,6 @@ static int cpufreq_interactive_speedchange_task(void *data)
 					hvt = min(hvt, pjcpu->local_hvtime);
 				}
 			}
-
-#if defined(CONFIG_ARCH_MSM8929)
-			//Disable LPM Mode when cpu freq. rise up over than hispeed freq.
-			tunables = pcpu->policy->governor_data;
-			if (pcpu->target_freq >= tunables->lpm_disable_freq){
-				lpm_set_mode(cpu_mask << cpu, power_level_mask << cpu*4, 0);
-			}
-			else {
-				lpm_set_mode(cpu_mask << cpu, power_level_mask << cpu*4, 1);
-			}
-#endif
 
 			if (max_freq != pcpu->policy->cur) {
 				__cpufreq_driver_target(pcpu->policy,
@@ -774,7 +742,7 @@ static void cpufreq_interactive_boost(void)
 	spin_unlock_irqrestore(&speedchange_cpumask_lock, flags[0]);
 
 	if (anyboost)
-		wake_up_process(speedchange_task);
+		wake_up_process_no_notif(speedchange_task);
 }
 
 static int load_change_callback(struct notifier_block *nb, unsigned long val,
@@ -1003,27 +971,6 @@ static ssize_t store_hispeed_freq(struct cpufreq_interactive_tunables *tunables,
 	tunables->hispeed_freq = val;
 	return count;
 }
-
-#if defined(CONFIG_ARCH_MSM8929)
-static ssize_t show_lpm_disable_freq(struct cpufreq_interactive_tunables *tunables,
-		char *buf)
-{
-	return sprintf(buf, "%u\n", tunables->lpm_disable_freq);
-}
-
-static ssize_t store_lpm_disable_freq(struct cpufreq_interactive_tunables *tunables,
-		const char *buf, size_t count)
-{
-	int ret;
-	long unsigned int val;
-
-	ret = strict_strtoul(buf, 0, &val);
-	if (ret < 0)
-		return ret;
-	tunables->lpm_disable_freq = val;
-	return count;
-}
-#endif
 
 #define show_store_one(file_name)					\
 static ssize_t show_##file_name(					\
@@ -1319,15 +1266,19 @@ static ssize_t store_use_sched_load(
 
 	if (tunables->use_sched_load == (bool) val)
 		return count;
+
+	tunables->use_sched_load = val;
+
 	if (val)
 		ret = cpufreq_interactive_enable_sched_input(tunables);
 	else
 		ret = cpufreq_interactive_disable_sched_input(tunables);
 
-	if (ret)
+	if (ret) {
+		tunables->use_sched_load = !val;
 		return ret;
+	}
 
-	tunables->use_sched_load = val;
 	return count;
 }
 
@@ -1426,9 +1377,6 @@ show_store_gov_pol_sys(use_sched_load);
 show_store_gov_pol_sys(use_migration_notif);
 show_store_gov_pol_sys(max_freq_hysteresis);
 show_store_gov_pol_sys(align_windows);
-#if defined(CONFIG_ARCH_MSM8929)
-show_store_gov_pol_sys(lpm_disable_freq);
-#endif
 
 #define gov_sys_attr_rw(_name)						\
 static struct global_attr _name##_gov_sys =				\
@@ -1456,9 +1404,6 @@ gov_sys_pol_attr_rw(use_sched_load);
 gov_sys_pol_attr_rw(use_migration_notif);
 gov_sys_pol_attr_rw(max_freq_hysteresis);
 gov_sys_pol_attr_rw(align_windows);
-#if defined(CONFIG_ARCH_MSM8929)
-gov_sys_pol_attr_rw(lpm_disable_freq);
-#endif
 
 static struct global_attr boostpulse_gov_sys =
 	__ATTR(boostpulse, 0200, NULL, store_boostpulse_gov_sys);
@@ -1483,9 +1428,6 @@ static struct attribute *interactive_attributes_gov_sys[] = {
 	&use_migration_notif_gov_sys.attr,
 	&max_freq_hysteresis_gov_sys.attr,
 	&align_windows_gov_sys.attr,
-#if defined(CONFIG_ARCH_MSM8929)
-	&lpm_disable_freq_gov_sys.attr,
-#endif
 	NULL,
 };
 
@@ -1511,9 +1453,6 @@ static struct attribute *interactive_attributes_gov_pol[] = {
 	&use_migration_notif_gov_pol.attr,
 	&max_freq_hysteresis_gov_pol.attr,
 	&align_windows_gov_pol.attr,
-#if defined(CONFIG_ARCH_MSM8929)
-	&lpm_disable_freq_gov_pol.attr,
-#endif
 	NULL,
 };
 
@@ -1587,6 +1526,7 @@ static struct cpufreq_interactive_tunables *alloc_tunable(
 	tunables->timer_rate = DEFAULT_TIMER_RATE;
 	tunables->boostpulse_duration_val = DEFAULT_MIN_SAMPLE_TIME;
 	tunables->timer_slack_val = DEFAULT_TIMER_SLACK;
+	tunables->align_windows = true;
 
 	spin_lock_init(&tunables->target_loads_lock);
 	spin_lock_init(&tunables->above_hispeed_delay_lock);
@@ -1618,16 +1558,7 @@ static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
 	struct cpufreq_interactive_tunables *tunables;
 	unsigned long flags;
 	int first_cpu;
-#if defined(CONFIG_ARCH_MSM8929)
-		//masking for little core
-		u8 cpu_mask=0xF0;
-		u32 power_level_mask=0x66660000;
-		//masking for big core
-		if (policy->cpu <= 3) {
-			cpu_mask = 0x0F;
-			power_level_mask = 0x00006666;
-		}
-#endif
+
 	if (have_governor_per_policy())
 		tunables = policy->governor_data;
 	else
@@ -1714,10 +1645,7 @@ static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
 		freq_table = cpufreq_frequency_get_table(policy->cpu);
 		if (!tunables->hispeed_freq)
 			tunables->hispeed_freq = policy->max;
-#if defined(CONFIG_ARCH_MSM8929)
-		if (!tunables->lpm_disable_freq)
-			tunables->lpm_disable_freq = policy->max;
-#endif
+
 		for_each_cpu(j, policy->cpus) {
 			pcpu = &per_cpu(cpuinfo, j);
 			pcpu->policy = policy;
@@ -1762,18 +1690,8 @@ static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
 		break;
 
 	case CPUFREQ_GOV_LIMITS:
-		if (policy->max < policy->cur)
-			__cpufreq_driver_target(policy,
-					policy->max, CPUFREQ_RELATION_H);
-		else if (policy->min > policy->cur) {
-			__cpufreq_driver_target(policy,
-					policy->min, CPUFREQ_RELATION_L);
-#if defined(CONFIG_ARCH_MSM8929)
-			//Disable LPM Mode when scaling_min_freq set up over than hispeed freq.
-			if (policy->min >= tunables->lpm_disable_freq)
-				lpm_set_mode(cpu_mask, power_level_mask, 0);
-#endif
-		}
+		__cpufreq_driver_target(policy,
+				policy->cur, CPUFREQ_RELATION_L);
 		for_each_cpu(j, policy->cpus) {
 			pcpu = &per_cpu(cpuinfo, j);
 
@@ -1862,7 +1780,7 @@ static int __init cpufreq_interactive_init(void)
 	get_task_struct(speedchange_task);
 
 	/* NB: wake up so the thread does not look hung to the freezer */
-	wake_up_process(speedchange_task);
+	wake_up_process_no_notif(speedchange_task);
 
 	return cpufreq_register_governor(&cpufreq_gov_interactive);
 }

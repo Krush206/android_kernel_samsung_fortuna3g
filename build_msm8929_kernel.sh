@@ -5,6 +5,9 @@ BUILD_COMMAND=$1
 if [ "$BUILD_COMMAND" == "j7_chnopen" ]; then
 	PRODUCT_NAME=j7ltechn;
 	SIGN_MODEL=
+elif [ "$BUILD_COMMAND" == "j7_spr" ]; then
+	PRODUCT_NAME=j7ltespr;
+	SIGN_MODEL=
 else
 #default product
         PRODUCT_NAME=$BUILD_COMMAND;
@@ -31,6 +34,7 @@ KERNEL_DEFCONFIG=msm8929_sec_defconfig
 DEBUG_DEFCONFIG=msm8929_sec_eng_defconfig
 SELINUX_DEFCONFIG=selinux_defconfig
 SELINUX_LOG_DEFCONFIG=selinux_log_defconfig
+DMVERITY_DEFCONFIG=dmverity_defconfig
 
 while getopts "w:t:" flag; do
 	case $flag in
@@ -282,6 +286,7 @@ SECFUNC_PRINT_HELP()
 	echo "  \$1 : "
 	echo "	for J7LTE_CHN_OPEN use j7_chncmcc"
 	echo "	for J7LTE_CHN_OPEN use j7_chnopen"
+	cho "	for J7LTE_USA_SPR use j7_spr"
 	echo "  \$2 : "
 	echo "	-B or Nothing  (-B : Secure Binary)"
 	echo "  \$3 : "

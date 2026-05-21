@@ -136,7 +136,6 @@ static void dbs_freq_increase(struct cpufreq_policy *policy, unsigned int freq)
 {
 	struct dbs_data *dbs_data = policy->governor_data;
 	struct od_dbs_tuners *od_tuners = dbs_data->tuners;
-	cpufreq_notify_utilization(policy, load);
 
 	if (od_tuners->powersave_bias)
 		freq = od_ops.powersave_bias_target(policy, freq,
@@ -169,6 +168,7 @@ static void od_check_cpu(int cpu, unsigned int load)
 			dbs_info->rate_mult =
 				od_tuners->sampling_down_factor;
 		dbs_freq_increase(policy, policy->max);
+		return;
 	} else {
 		/* Calculate the next frequency proportional to load */
 		unsigned int freq_next;

@@ -114,6 +114,7 @@
 #endif
 #define IST30XX_DEBUG			(1)
 #define IST30XX_CMCS_TEST		(1)
+#define IST30XX_CMCS_JIT_TEST	(1)
 #define IST30XX_GESTURE			(0)
 #define IST30XX_STATUS_DEBUG		(0)
 
@@ -165,7 +166,8 @@ enum ist30xx_reliability_commands {
 	TEST_RAW_ALL_DATA = 0,
 	TEST_CM_ALL_DATA,
 	TEST_CS_ALL_DATA,
-	TEST_SLOPE_ALL_DATA,
+	TEST_SLOPE0_ALL_DATA,
+	TEST_SLOPE1_ALL_DATA,
 };
 
 /* Debug message */
@@ -221,6 +223,7 @@ enum ist30xx_reliability_commands {
 #define IST30XX_REG_TSPTYPE		IST30XX_DA_ADDR(0x40002010)
 /* SEC defined [ */
 #define IST30XX_REG_XY_RES		IST30XX_DA_ADDR(0x40)
+#define IST30XX_REG_XY_SWAP		IST30XX_DA_ADDR(0x5C)
 /* SEC defined ] */
 
 /* HIB register */
@@ -456,8 +459,12 @@ struct ist30xx_dt_data {
 	const char *tsp_vdd_name;
 	struct regulator *tsp_power;
 	int fw_bin;
+	int tkey;
+	int octa_hw;
+	int multiple_tsp;
 	const char *ic_version;
 	const char *project_name;
+	const char *extra_string;
 	char fw_path[FIRMWARE_PATH_LENGTH];
 	char cmcs_path[FIRMWARE_PATH_LENGTH];
 };

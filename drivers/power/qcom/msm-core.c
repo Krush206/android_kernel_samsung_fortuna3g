@@ -1,4 +1,4 @@
-/* Copyright (c) 2014, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2014,2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -96,17 +96,23 @@ struct cpu_static_info {
 
 static DEFINE_MUTEX(policy_update_mutex);
 static DEFINE_MUTEX(kthread_update_mutex);
+#ifdef ENABLE_TSENS_SAMPLING
 static struct delayed_work sampling_work;
 static struct completion sampling_completion;
 static struct task_struct *sampling_task;
 static int low_hyst_temp;
 static int high_hyst_temp;
+#endif
 static struct platform_device *msm_core_pdev;
 static struct cpu_activity_info activity[NR_CPUS];
 DEFINE_PER_CPU(struct cpu_pstate_pwr *, ptable);
 static struct cpu_pwr_stats cpu_stats[NR_CPUS];
 ALLOCATE_2D_ARRAY(uint32_t);
 
+/*
+ * Userspace checks for the presence of poll_ms and disabled, so keep them
+ * even when ENABLE_TSENS_SAMPLING isn't used.
+ */
 static int poll_ms;
 module_param_named(polling_interval, poll_ms, int,
 		S_IRUGO | S_IWUSR | S_IWGRP);
@@ -114,6 +120,7 @@ module_param_named(polling_interval, poll_ms, int,
 static int disabled;
 module_param_named(disabled, disabled, int,
 		S_IRUGO | S_IWUSR | S_IWGRP);
+#ifdef ENABLE_TSENS_SAMPLING
 static bool in_suspend;
 static bool activate_power_table;
 /*
@@ -167,6 +174,7 @@ static void core_temp_notify(enum thermal_trip_type type,
 
 	complete(&sampling_completion);
 }
+#endif
 
 static void repopulate_stats(int cpu)
 {
@@ -192,6 +200,7 @@ static void repopulate_stats(int cpu)
 
 void trigger_cpu_pwr_stats_calc(void)
 {
+#ifdef ENABLE_TSENS_SAMPLING
 	int cpu;
 	static long prev_temp[NR_CPUS];
 	static DEFINE_SPINLOCK(update_lock);
@@ -215,6 +224,7 @@ void trigger_cpu_pwr_stats_calc(void)
 			repopulate_stats(cpu);
 	}
 	spin_unlock(&update_lock);
+#endif
 }
 EXPORT_SYMBOL(trigger_cpu_pwr_stats_calc);
 
@@ -246,6 +256,7 @@ static void update_related_freq_table(struct cpufreq_policy *policy)
 	}
 }
 
+#ifdef ENABLE_TSENS_SAMPLING
 static __ref int do_sampling(void *data)
 {
 	int cpu;
@@ -287,6 +298,7 @@ unlock:
 	}
 	return 0;
 }
+#endif
 
 static void clear_static_power(struct cpu_static_info *sp)
 {
@@ -308,13 +320,17 @@ static int update_userspace_power(struct sched_params __user *argp)
 {
 	int i;
 	int ret;
-	int cpu;
+	int cpu = -1;
 	struct cpu_activity_info *node;
 	struct cpu_static_info *sp, *clear_sp;
-	int mpidr = (argp->cluster << 8);
-	int cpumask = argp->cpumask;
+	int cpumask, cluster, mpidr;
 
-	pr_debug("cpumask %d, cluster: %d\n", argp->cpumask, argp->cluster);
+	get_user(cpumask, &argp->cpumask);
+	get_user(cluster, &argp->cluster);
+	mpidr = cluster << 8;
+
+	pr_debug("%s: cpumask %d, cluster: %d\n", __func__, cpumask,
+					cluster);
 	for (i = 0; i < MAX_CORES_PER_CLUSTER; i++, cpumask >>= 1) {
 		if (!(cpumask & 0x01))
 			continue;
@@ -326,7 +342,7 @@ static int update_userspace_power(struct sched_params __user *argp)
 		}
 	}
 
-	if (cpu >= num_possible_cpus())
+	if ((cpu < 0) || (cpu >= num_possible_cpus()))
 		return -EINVAL;
 
 	node = &activity[cpu];
@@ -337,9 +353,10 @@ static int update_userspace_power(struct sched_params __user *argp)
 	if (!sp)
 		return -ENOMEM;
 
-
+	mutex_lock(&policy_update_mutex);
 	sp->power = allocate_2d_array_uint32_t(node->sp->num_of_freqs);
 	if (IS_ERR_OR_NULL(sp->power)) {
+		mutex_unlock(&policy_update_mutex);
 		ret = PTR_ERR(sp->power);
 		kfree(sp);
 		return ret;
@@ -358,11 +375,12 @@ static int update_userspace_power(struct sched_params __user *argp)
 	/* Copy the same power values for all the cpus in the cpumask
 	 * argp->cpumask within the cluster (argp->cluster)
 	 */
-	cpumask = argp->cpumask;
+	spin_lock(&update_lock);
+	get_user(cpumask, &argp->cpumask);
 	for (i = 0; i < MAX_CORES_PER_CLUSTER; i++, cpumask >>= 1) {
 		if (!(cpumask & 0x01))
 			continue;
-		mpidr = (argp->cluster << CLUSTER_OFFSET_FOR_MPIDR);
+		mpidr = (cluster << CLUSTER_OFFSET_FOR_MPIDR);
 		mpidr |= i;
 		for_each_possible_cpu(cpu) {
 			if (!(cpu_logical_map(cpu) == mpidr))
@@ -380,11 +398,15 @@ static int update_userspace_power(struct sched_params __user *argp)
 			repopulate_stats(cpu);
 		}
 	}
+	mutex_unlock(&policy_update_mutex);
 
+#ifdef ENABLE_TSENS_SAMPLING
 	activate_power_table = true;
+#endif
 	return 0;
 
 failed:
+	mutex_unlock(&policy_update_mutex);
 	for (i = 0; i < TEMP_DATA_POINTS; i++)
 		kfree(sp->power[i]);
 	kfree(sp->power);
@@ -399,12 +421,16 @@ static long msm_core_ioctl(struct file *file, unsigned int cmd,
 	struct cpu_activity_info *node = NULL;
 	struct sched_params __user *argp = (struct sched_params __user *)arg;
 	int i, cpu = num_possible_cpus();
-	int mpidr = (argp->cluster << (MAX_CORES_PER_CLUSTER *
-			MAX_NUM_OF_CLUSTERS));
-	int cpumask = argp->cpumask;
+	int mpidr;
+	int cluster, cpumask;
 
 	if (!argp)
 		return -EINVAL;
+
+	get_user(cluster, &argp->cluster);
+	mpidr = (cluster << (MAX_CORES_PER_CLUSTER *
+			MAX_NUM_OF_CLUSTERS));
+	get_user(cpumask, &argp->cpumask);
 
 	switch (cmd) {
 	case EA_LEAKAGE:
@@ -473,6 +499,7 @@ static int msm_core_release(struct inode *inode, struct file *file)
 	return 0;
 }
 
+#ifdef ENABLE_TSENS_SAMPLING
 static inline void init_sens_threshold(struct sensor_threshold *threshold,
 		enum thermal_trip_type trip, long temp,
 		void *data)
@@ -482,6 +509,7 @@ static inline void init_sens_threshold(struct sensor_threshold *threshold,
 	threshold->data = data;
 	threshold->notify = (void *)core_temp_notify;
 }
+#endif
 
 static int msm_core_stats_init(struct device *dev, int cpu)
 {
@@ -507,6 +535,7 @@ static int msm_core_stats_init(struct device *dev, int cpu)
 	return 0;
 }
 
+#ifdef ENABLE_TSENS_SAMPLING
 static int msm_core_task_init(struct device *dev)
 {
 	init_completion(&sampling_completion);
@@ -518,6 +547,7 @@ static int msm_core_task_init(struct device *dev)
 	}
 	return 0;
 }
+#endif
 
 struct cpu_pwr_stats *get_cpu_pwr_stats(void)
 {
@@ -615,6 +645,7 @@ static int msm_core_dyn_pwr_init(struct platform_device *pdev,
 	return ret;
 }
 
+#ifdef ENABLE_TSENS_SAMPLING
 static int msm_core_tsens_init(struct device_node *node, int cpu)
 {
 	int ret = 0;
@@ -668,6 +699,7 @@ static int msm_core_tsens_init(struct device_node *node, int cpu)
 
 	return ret;
 }
+#endif
 
 static int msm_core_mpidr_init(struct device_node *node)
 {
@@ -733,6 +765,7 @@ struct notifier_block cpu_policy = {
 	.notifier_call = msm_core_cpu_policy_handler
 };
 
+#ifdef ENABLE_TSENS_SAMPLING
 static int system_suspend_handler(struct notifier_block *nb,
 				unsigned long val, void *data)
 {
@@ -780,6 +813,7 @@ static int system_suspend_handler(struct notifier_block *nb,
 
 	return NOTIFY_OK;
 }
+#endif
 
 static int msm_core_freq_init(void)
 {
@@ -837,9 +871,13 @@ static int msm_core_params_init(struct platform_device *pdev)
 
 		activity[cpu].mpidr = mpidr;
 
+#ifdef ENABLE_TSENS_SAMPLING
 		ret = msm_core_tsens_init(child_node, cpu);
 		if (ret)
 			return ret;
+#else
+		activity[cpu].temp = DEFAULT_TEMP;
+#endif
 
 		if (!activity[cpu].sp->table)
 			continue;
@@ -892,14 +930,17 @@ static void free_dyn_memory(void)
 static int msm_core_dev_probe(struct platform_device *pdev)
 {
 	int ret = 0;
+#ifdef ENABLE_TSENS_SAMPLING
 	char *key = NULL;
 	struct device_node *node;
 	int cpu;
+#endif
 
 	if (!pdev)
 		return -ENODEV;
 
 	msm_core_pdev = pdev;
+#ifdef ENABLE_TSENS_SAMPLING
 	node = pdev->dev.of_node;
 	if (!node)
 		return -ENODEV;
@@ -918,6 +959,7 @@ static int msm_core_dev_probe(struct platform_device *pdev)
 	ret = of_property_read_u32(node, key, &poll_ms);
 	if (ret)
 		pr_info("msm-core initialized without polling period\n");
+#endif
 
 	ret = msm_core_freq_init();
 	if (ret)
@@ -933,6 +975,7 @@ static int msm_core_dev_probe(struct platform_device *pdev)
 	if (ret)
 		goto failed;
 
+#ifdef ENABLE_TSENS_SAMPLING
 	ret = msm_core_task_init(&pdev->dev);
 	if (ret)
 		goto failed;
@@ -942,8 +985,9 @@ static int msm_core_dev_probe(struct platform_device *pdev)
 
 	INIT_DEFERRABLE_WORK(&sampling_work, samplequeue_handle);
 	schedule_delayed_work(&sampling_work, msecs_to_jiffies(0));
-	cpufreq_register_notifier(&cpu_policy, CPUFREQ_POLICY_NOTIFIER);
 	pm_notifier(system_suspend_handler, 0);
+#endif
+	cpufreq_register_notifier(&cpu_policy, CPUFREQ_POLICY_NOTIFIER);
 	return 0;
 failed:
 	free_dyn_memory();
@@ -952,8 +996,8 @@ failed:
 
 static int msm_core_remove(struct platform_device *pdev)
 {
+#ifdef ENABLE_TSENS_SAMPLING
 	int cpu;
-
 	for_each_possible_cpu(cpu) {
 		if (activity[cpu].sensor_id < 0)
 			continue;
@@ -963,6 +1007,7 @@ static int msm_core_remove(struct platform_device *pdev)
 		sensor_cancel_trip(activity[cpu].sensor_id,
 				&activity[cpu].low_threshold);
 	}
+#endif
 	free_dyn_memory();
 	misc_deregister(&msm_core_device);
 	return 0;

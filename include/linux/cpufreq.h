@@ -11,11 +11,13 @@
 #ifndef _LINUX_CPUFREQ_H
 #define _LINUX_CPUFREQ_H
 
+#include <linux/pid_namespace.h>
 #include <linux/cpumask.h>
 #include <linux/completion.h>
 #include <linux/kobject.h>
 #include <linux/notifier.h>
 #include <linux/sysfs.h>
+#include <asm/cputime.h>
 
 /*********************************************************************
  *                        CPUFREQ INTERFACE                          *
@@ -99,7 +101,6 @@ struct cpufreq_policy {
 	 *     __cpufreq_governor(data, CPUFREQ_GOV_POLICY_EXIT);
 	 */
 	struct rw_semaphore	rwsem;
-	unsigned int util;
 };
 
 /* Only for ACPI */
@@ -135,7 +136,6 @@ void cpufreq_sysfs_remove_file(const struct attribute *attr);
 unsigned int cpufreq_get(unsigned int cpu);
 unsigned int cpufreq_quick_get(unsigned int cpu);
 unsigned int cpufreq_quick_get_max(unsigned int cpu);
-unsigned int cpufreq_quick_get_util(unsigned int cpu);
 void disable_cpufreq(void);
 
 u64 get_cpu_idle_time(unsigned int cpu, u64 *wall, int io_busy);
@@ -157,56 +157,6 @@ static inline unsigned int cpufreq_quick_get_max(unsigned int cpu)
 	return 0;
 }
 static inline void disable_cpufreq(void) { }
-#endif
-
-#ifdef CONFIG_MSM_LIMITER
-int cpufreq_set_gov(char *target_gov, unsigned int cpu);
-char *cpufreq_get_gov(unsigned int cpu);
-int cpufreq_set_freq(unsigned int max_freq, unsigned int min_freq,
-			unsigned int cpu);
-int cpufreq_get_max(unsigned int cpu);
-int cpufreq_get_min(unsigned int cpu);
-#endif
-
-#if defined (CONFIG_CPU_FREQ_LIMIT_USERSPACE)
-enum {
-	BOOT_CPU = 0,
-};
-
-#define MIN_TOUCH_LOW_LIMIT	1497600
-#define MIN_TOUCH_HIGH_LIMIT	2457600
-#define MIN_CAMERA_LIMIT	998400
-
-#if defined(CONFIG_ARCH_MSM8939) || defined(CONFIG_ARCH_MSM8929)
-#define MIN_TOUCH_LIMIT         556600
-#define MIN_TOUCH_LIMIT_SECOND  499200
-#elif defined(CONFIG_ARCH_MSM8916)
-#define MIN_TOUCH_LIMIT         1190400
-#define MIN_TOUCH_LIMIT_SECOND  998400
-#else
-#define MIN_TOUCH_LIMIT		1728000
-#define MIN_TOUCH_LIMIT_SECOND	1190400
-#endif
-
-enum {
-	DVFS_NO_ID			= 0,
-
-	/* need to update now */
-	DVFS_TOUCH_ID			= 0x00000001,
-	DVFS_APPS_MIN_ID		= 0x00000002,
-	DVFS_APPS_MAX_ID		= 0x00000004,
-	DVFS_UNICPU_ID			= 0x00000008,
-	DVFS_LTETP_ID			= 0x00000010,
-	DVFS_CAMERA_ID			= 0x00000012,
-
-	/* DO NOT UPDATE NOW */
-	DVFS_THERMALD_ID		= 0x00000100,
-
-	DVFS_MAX_ID
-};
-
-
-int set_freq_limit(unsigned long id, unsigned int freq);
 #endif
 
 /*********************************************************************
@@ -255,6 +205,7 @@ __ATTR(_name, 0644, show_##_name, store_##_name)
 struct cpufreq_driver {
 	char			name[CPUFREQ_NAME_LEN];
 	u8			flags;
+	void			*driver_data;
 
 	/* needed by all drivers */
 	int	(*init)		(struct cpufreq_policy *policy);
@@ -274,7 +225,6 @@ struct cpufreq_driver {
 	/* optional */
 	int	(*bios_limit)	(int cpu, unsigned int *limit);
 
-unsigned int (*getavg) (struct cpufreq_policy *policy, unsigned int cpu);
 	int	(*exit)		(struct cpufreq_policy *policy);
 	int	(*suspend)	(struct cpufreq_policy *policy);
 	int	(*resume)	(struct cpufreq_policy *policy);
@@ -310,8 +260,8 @@ int cpufreq_register_driver(struct cpufreq_driver *driver_data);
 int cpufreq_unregister_driver(struct cpufreq_driver *driver_data);
 
 const char *cpufreq_get_current_driver(void);
-void cpufreq_notify_utilization(struct cpufreq_policy *policy,
-		unsigned int load);
+void *cpufreq_get_driver_data(void);
+
 static inline void cpufreq_verify_within_limits(struct cpufreq_policy *policy,
 		unsigned int min, unsigned int max)
 {
@@ -341,6 +291,7 @@ cpufreq_verify_within_cpu_limits(struct cpufreq_policy *policy)
 
 #define CPUFREQ_TRANSITION_NOTIFIER	(0)
 #define CPUFREQ_POLICY_NOTIFIER		(1)
+#define CPUFREQ_GOVINFO_NOTIFIER	(2)
 
 /* Transition notifiers */
 #define CPUFREQ_PRECHANGE		(0)
@@ -357,12 +308,25 @@ cpufreq_verify_within_cpu_limits(struct cpufreq_policy *policy)
 #define CPUFREQ_CREATE_POLICY		(5)
 #define CPUFREQ_REMOVE_POLICY		(6)
 
+/* Govinfo Notifiers */
+#define CPUFREQ_LOAD_CHANGE		(0)
+
 #ifdef CONFIG_CPU_FREQ
 int cpufreq_register_notifier(struct notifier_block *nb, unsigned int list);
 int cpufreq_unregister_notifier(struct notifier_block *nb, unsigned int list);
 
 void cpufreq_notify_transition(struct cpufreq_policy *policy,
 		struct cpufreq_freqs *freqs, unsigned int state);
+/*
+ * Governor specific info that can be passed to modules that subscribe
+ * to CPUFREQ_GOVINFO_NOTIFIER
+ */
+struct cpufreq_govinfo {
+	unsigned int cpu;
+	unsigned int load;
+	unsigned int sampling_rate_us;
+};
+extern struct atomic_notifier_head cpufreq_govinfo_notifier_list;
 
 #else /* CONFIG_CPU_FREQ */
 static inline int cpufreq_register_notifier(struct notifier_block *nb,
@@ -444,7 +408,6 @@ int cpufreq_driver_target(struct cpufreq_policy *policy,
 int __cpufreq_driver_target(struct cpufreq_policy *policy,
 				   unsigned int target_freq,
 				   unsigned int relation);
-extern int __cpufreq_driver_getavg(struct cpufreq_policy *policy, unsigned int cpu);
 int cpufreq_register_governor(struct cpufreq_governor *governor);
 void cpufreq_unregister_governor(struct cpufreq_governor *governor);
 
@@ -524,5 +487,23 @@ static inline int cpufreq_generic_exit(struct cpufreq_policy *policy)
 	cpufreq_frequency_table_put_attr(policy->cpu);
 	return 0;
 }
+
+/*********************************************************************
+ *                         CPUFREQ STATS                             *
+ *********************************************************************/
+
+#ifdef CONFIG_CPU_FREQ_STAT
+void acct_update_power(struct task_struct *p, cputime_t cputime);
+#else
+static inline void acct_update_power(struct task_struct *p, cputime_t cputime) {}
+#endif
+#define MIN_FINGER_LIMIT 1344000
+
+void cpufreq_task_stats_init(struct task_struct *p);
+void cpufreq_task_stats_exit(struct task_struct *p);
+void cpufreq_task_stats_remove_uids(uid_t uid_start, uid_t uid_end);
+int  proc_time_in_state_show(struct seq_file *m, struct pid_namespace *ns,
+	struct pid *pid, struct task_struct *p);
+
 
 #endif /* _LINUX_CPUFREQ_H */

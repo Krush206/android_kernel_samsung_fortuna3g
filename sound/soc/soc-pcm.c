@@ -25,6 +25,7 @@
 #include <linux/export.h>
 #include <linux/debugfs.h>
 #include <linux/dma-mapping.h>
+#include <linux/ratelimit.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
@@ -161,6 +162,7 @@ static int soc_pcm_open(struct snd_pcm_substream *substream)
 	struct snd_soc_dai_driver *cpu_dai_drv = cpu_dai->driver;
 	struct snd_soc_dai_driver *codec_dai_drv = codec_dai->driver;
 	int ret = 0;
+	static DEFINE_RATELIMIT_STATE(rl, HZ/2, 1);
 
 	pm_runtime_get_sync(cpu_dai->dev);
 	pm_runtime_get_sync(codec_dai->dev);
@@ -182,8 +184,10 @@ static int soc_pcm_open(struct snd_pcm_substream *substream)
 	if (platform->driver->ops && platform->driver->ops->open) {
 		ret = platform->driver->ops->open(substream);
 		if (ret < 0) {
-			dev_err(platform->dev, "ASoC: can't open platform"
-				" %s: %d\n", platform->name, ret);
+			if (__ratelimit(&rl))
+				dev_err(platform->dev,
+					"ASoC: can't open platform %s: %d\n",
+					platform->name, ret);
 			goto platform_err;
 		}
 	}
@@ -431,8 +435,9 @@ static int soc_pcm_close(struct snd_pcm_substream *substream)
 		} else {
 			/* start delayed pop wq here for playback streams */
 			rtd->pop_wait = 1;
-			schedule_delayed_work(&rtd->delayed_work,
-				msecs_to_jiffies(rtd->pmdown_time));
+			queue_delayed_work(system_power_efficient_wq,
+					   &rtd->delayed_work,
+					   msecs_to_jiffies(rtd->pmdown_time));
 		}
 	} else {
 		/* capture streams can be powered down now */
@@ -695,15 +700,6 @@ static int soc_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 		if (ret < 0)
 			return ret;
 	}
-
-#ifdef CONFIG_AUDIO_SPEAKER_OUT_MAXIM_AMP_ENABLE
-	if (rtd->dai_link->ops && rtd->dai_link->ops->trigger) {
-		ret = rtd->dai_link->ops->trigger(substream, cmd);
-		if (ret < 0) {
-			return ret;
-		}
-	}
-#endif /* CONFIG_AUDIO_SPEAKER_OUT_MAXIM_AMP_ENABLE */
 	return 0;
 }
 
@@ -1209,6 +1205,7 @@ static int dpcm_fe_dai_startup(struct snd_pcm_substream *fe_substream)
 	struct snd_soc_pcm_runtime *fe = fe_substream->private_data;
 	struct snd_pcm_runtime *runtime = fe_substream->runtime;
 	int stream = fe_substream->stream, ret = 0;
+	static DEFINE_RATELIMIT_STATE(rl, HZ/2, 1);
 
 	fe->dpcm[stream].runtime_update = SND_SOC_DPCM_UPDATE_FE;
 
@@ -1223,7 +1220,8 @@ static int dpcm_fe_dai_startup(struct snd_pcm_substream *fe_substream)
 	/* start the DAI frontend */
 	ret = soc_pcm_open(fe_substream);
 	if (ret < 0) {
-		dev_err(fe->dev,"ASoC: failed to start FE %d\n", ret);
+		if (__ratelimit(&rl))
+			dev_err(fe->dev, "ASoC: failed to start FE %d\n", ret);
 		goto unwind;
 	}
 
@@ -1327,7 +1325,8 @@ int dpcm_be_dai_hw_free(struct snd_soc_pcm_runtime *fe, int stream)
 		    (be->dpcm[stream].state != SND_SOC_DPCM_STATE_PREPARE) &&
 		    (be->dpcm[stream].state != SND_SOC_DPCM_STATE_HW_FREE) &&
 		    (be->dpcm[stream].state != SND_SOC_DPCM_STATE_PAUSED) &&
-		    (be->dpcm[stream].state != SND_SOC_DPCM_STATE_STOP))
+		    (be->dpcm[stream].state != SND_SOC_DPCM_STATE_STOP) &&
+		    (be->dpcm[stream].state != SND_SOC_DPCM_STATE_SUSPEND))
 			continue;
 
 		dev_dbg(be->dev, "ASoC: hw_free BE %s\n",
@@ -1854,6 +1853,10 @@ void dpcm_be_dai_prepare_async(struct snd_soc_pcm_runtime *fe, int stream,
 							    dpcm, domain);
 		} else {
 			dpcm_async[i++] = dpcm;
+			if (i == DPCM_MAX_BE_USERS) {
+				dev_dbg(fe->dev, "ASoC: MAX backend users!\n");
+				break;
+			}
 		}
 	}
 

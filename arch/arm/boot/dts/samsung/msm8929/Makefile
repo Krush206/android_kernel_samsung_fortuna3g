@@ -41,10 +41,15 @@ dtb-$(CONFIG_ARCH_MSM8909) += msm8909-sim.dtb \
 	msm8909-1gb-mtp.dtb
 ifeq ($(CONFIG_ARCH_MSM8929),y)
 
+ifeq ($(CONFIG_MACH_J7_USA_SPR),y)
+	dtb-y += msm8929-sec-j7-spr-r00.dtb
+endif
+
 ifeq ($(CONFIG_MACH_J7_CHN_CMCC),y)
 	dtb-y += msm8929-sec-j7-chn-r00.dtb
 	dtb-y += msm8929-sec-j7-chn-r01.dtb
 	dtb-y += msm8929-sec-j7-chn-r02.dtb
+	dtb-y += msm8929-sec-j7-chn-r04.dtb
 endif
 
 endif

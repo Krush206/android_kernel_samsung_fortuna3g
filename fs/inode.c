@@ -885,7 +885,11 @@ unsigned int get_next_ino(void)
 	}
 #endif
 
-	*p = ++res;
+	res++;
+	/* get_next_ino should not provide a 0 inode number */
+	if (unlikely(!res))
+		res++;
+	*p = res;
 	put_cpu_var(last_ino);
 	return res;
 }
@@ -1599,12 +1603,12 @@ int should_remove_suid(struct dentry *dentry)
 }
 EXPORT_SYMBOL(should_remove_suid);
 
-static int __remove_suid(struct dentry *dentry, int kill)
+static int __remove_suid(struct vfsmount *mnt, struct dentry *dentry, int kill)
 {
 	struct iattr newattrs;
 
 	newattrs.ia_valid = ATTR_FORCE | kill;
-	return notify_change(dentry, &newattrs);
+	return notify_change2(mnt, dentry, &newattrs);
 }
 
 int file_remove_suid(struct file *file)
@@ -1627,10 +1631,11 @@ int file_remove_suid(struct file *file)
 	if (killpriv)
 		error = security_inode_killpriv(dentry);
 	if (!error && killsuid)
-		error = __remove_suid(dentry, killsuid);
+		error = __remove_suid(file->f_path.mnt, dentry, killsuid);
 	if (!error && (inode->i_sb->s_flags & MS_NOSEC))
 		inode->i_flags |= S_NOSEC;
-
+	if (!error)
+		inode_has_no_xattr(inode);
 	return error;
 }
 EXPORT_SYMBOL(file_remove_suid);

@@ -16,14 +16,12 @@
 
 #include <linux/input/input_booster.h>
 
-#ifndef CONFIG_CPU_FREQ_LIMIT_USERSPACE
 #define DVFS_TOUCH_ID	0
 int set_freq_limit(unsigned long id, unsigned int freq)
 {
 	pr_err("%s is not yet implemented\n", __func__);
 	return 0;
 }
-#endif
 
 static struct input_booster_data *g_data;
 
@@ -438,6 +436,26 @@ void input_booster_free(struct input_booster *booster)
 	kfree(booster);
 }
 
+void input_booster_get_default_setting(const char *flag, struct dvfs *value)
+{
+	struct input_booster_data *data = g_data;
+
+	if (!data) {
+		pr_err("%s: data is NULL, return", __func__);
+		return;
+	}
+
+	if (strncmp(flag, "head", 4) == 0) {
+		memcpy(value, &data->dt_data->head, sizeof(struct dvfs));
+	} else if (strncmp(flag, "tail", 4) == 0) {
+		memcpy(value, &data->dt_data->tail, sizeof(struct dvfs));
+	} else {
+		memset(value, 0x0, sizeof(struct dvfs));
+	}
+	dev_info(data->dev, "%s: %s %d %d %d\n", __func__, flag,
+		value->time, value->cpu_freq, value->bimc_freq);
+}
+
 static ssize_t input_booster_get_debug_level(struct class *dev,
 		struct class_attribute *attr, char *buf)
 {
@@ -607,6 +625,29 @@ static ssize_t input_booster_set_level(struct class *dev,
 	dev_info(data->dev, "%s: %d\n", __func__, data->level);
 
 	return count;
+}
+
+/* Only use tsp/wacom */
+void input_booster_set_level_change(int val)
+{
+	struct input_booster_data *data = g_data;
+	int stage;
+
+	if (!data) {
+		pr_err("%s: data is NULL, return", __func__);
+		return;
+	}
+
+	stage = 1 << val;
+	if (!(data->dt_data->tsp_stage & stage)) {
+		dev_err(data->dev,
+				"%s: %d is not supported(%04x != %04x).\n",
+				__func__, val, stage, data->dt_data->tsp_stage);
+		return;
+	}
+
+	data->level = (unsigned int)val;
+	dev_info(data->dev, "%s: %d\n", __func__, data->level);
 }
 
 static CLASS_ATTR(debug_level, S_IRUGO | S_IWUSR, input_booster_get_debug_level, input_booster_set_debug_level);

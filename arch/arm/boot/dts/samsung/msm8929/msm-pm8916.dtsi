@@ -36,6 +36,7 @@
 			qcom,system-reset;
 			qcom,clear-warm-reset;
 			qcom,s3-debounce = <128>;
+			qcom,store-hard-reset-reason;
 
 			qcom,pon_1 {
 				qcom,pon-type = <0>;

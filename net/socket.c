@@ -526,9 +526,23 @@ static ssize_t sockfs_listxattr(struct dentry *dentry, char *buffer,
 	return used;
 }
 
+int sockfs_setattr(struct dentry *dentry, struct iattr *iattr)
+{
+	int err = simple_setattr(dentry, iattr);
+
+	if (!err && (iattr->ia_valid & ATTR_UID)) {
+		struct socket *sock = SOCKET_I(dentry->d_inode);
+
+		sock->sk->sk_uid = iattr->ia_uid;
+	}
+
+	return err;
+}
+
 static const struct inode_operations sockfs_inode_ops = {
 	.getxattr = sockfs_getxattr,
 	.listxattr = sockfs_listxattr,
+	.setattr = sockfs_setattr,
 };
 
 /**
@@ -1451,48 +1465,61 @@ SYSCALL_DEFINE4(socketpair, int, family, int, type, int, protocol,
 		err = fd1;
 		goto out_release_both;
 	}
+
 	fd2 = get_unused_fd_flags(flags);
 	if (unlikely(fd2 < 0)) {
 		err = fd2;
-		put_unused_fd(fd1);
-		goto out_release_both;
+		goto out_put_unused_1;
 	}
 
 	newfile1 = sock_alloc_file(sock1, flags, NULL);
 	if (unlikely(IS_ERR(newfile1))) {
 		err = PTR_ERR(newfile1);
-		put_unused_fd(fd1);
-		put_unused_fd(fd2);
-		goto out_release_both;
+		goto out_put_unused_both;
 	}
 
 	newfile2 = sock_alloc_file(sock2, flags, NULL);
 	if (IS_ERR(newfile2)) {
 		err = PTR_ERR(newfile2);
-		fput(newfile1);
-		put_unused_fd(fd1);
-		put_unused_fd(fd2);
-		sock_release(sock2);
-		goto out;
+		goto out_fput_1;
 	}
 
+	err = put_user(fd1, &usockvec[0]);
+	if (err)
+		goto out_fput_both;
+
+	err = put_user(fd2, &usockvec[1]);
+	if (err)
+		goto out_fput_both;
+
 	audit_fd_pair(fd1, fd2);
+
 	fd_install(fd1, newfile1);
 	fd_install(fd2, newfile2);
 	/* fd1 and fd2 may be already another descriptors.
 	 * Not kernel problem.
 	 */
 
-	err = put_user(fd1, &usockvec[0]);
-	if (!err)
-		err = put_user(fd2, &usockvec[1]);
-	if (!err)
-		return 0;
+	return 0;
 
-	sys_close(fd2);
-	sys_close(fd1);
-	return err;
+out_fput_both:
+	fput(newfile2);
+	fput(newfile1);
+	put_unused_fd(fd2);
+	put_unused_fd(fd1);
+	goto out;
 
+out_fput_1:
+	fput(newfile1);
+	put_unused_fd(fd2);
+	put_unused_fd(fd1);
+	sock_release(sock2);
+	goto out;
+
+out_put_unused_both:
+	put_unused_fd(fd2);
+out_put_unused_1:
+	put_unused_fd(fd1);
 out_release_both:
 	sock_release(sock2);
 out_release_1:
@@ -1527,9 +1554,14 @@ SYSCALL_DEFINE3(bind, int, fd, struct sockaddr __user *, umyaddr, int, addrlen)
 						      (struct sockaddr *)
 						      &address, addrlen);
 		}
-		fput_light(sock->file, fput_needed);
-		if (!err)
+		if (!err) {
+			if (sock->sk)
+				sock_hold(sock->sk);
 			sockev_notify(SOCKEV_BIND, sock);
+			if (sock->sk)
+				sock_put(sock->sk);
+		}
+		fput_light(sock->file, fput_needed);
 	}
 	return err;
 }
@@ -1556,9 +1588,14 @@ SYSCALL_DEFINE2(listen, int, fd, int, backlog)
 		if (!err)
 			err = sock->ops->listen(sock, backlog);
 
-		fput_light(sock->file, fput_needed);
-		if (!err)
+		if (!err) {
+			if (sock->sk)
+				sock_hold(sock->sk);
 			sockev_notify(SOCKEV_LISTEN, sock);
+			if (sock->sk)
+				sock_put(sock->sk);
+		}
+		fput_light(sock->file, fput_needed);
 	}
 	return err;
 }
@@ -1787,6 +1824,8 @@ SYSCALL_DEFINE6(sendto, int, fd, void __user *, buff, size_t, len,
 
 	if (len > INT_MAX)
 		len = INT_MAX;
+	if (unlikely(!access_ok(VERIFY_READ, buff, len)))
+		return -EFAULT;
 	sock = sockfd_lookup_light(fd, &err, &fput_needed);
 	if (!sock)
 		goto out;
@@ -1848,6 +1887,8 @@ SYSCALL_DEFINE6(recvfrom, int, fd, void __user *, ubuf, size_t, size,
 
 	if (size > INT_MAX)
 		size = INT_MAX;
+	if (unlikely(!access_ok(VERIFY_WRITE, ubuf, size)))
+		return -EFAULT;
 	sock = sockfd_lookup_light(fd, &err, &fput_needed);
 	if (!sock)
 		goto out;
@@ -1991,6 +2032,9 @@ static int copy_msghdr_from_user(struct msghdr *kmsg,
 	if (copy_from_user(kmsg, umsg, sizeof(struct msghdr)))
 		return -EFAULT;
 
+	if (kmsg->msg_name == NULL)
+		kmsg->msg_namelen = 0;
+
 	if (kmsg->msg_namelen < 0)
 		return -EINVAL;
 
@@ -2014,14 +2058,12 @@ static int ___sys_sendmsg(struct socket *sock, struct msghdr __user *msg,
 	int err, ctl_len, total_len;
 
 	err = -EFAULT;
-	if (MSG_CMSG_COMPAT & flags) {
-		if (get_compat_msghdr(msg_sys, msg_compat))
-			return -EFAULT;
-	} else {
+	if (MSG_CMSG_COMPAT & flags)
+		err = get_compat_msghdr(msg_sys, msg_compat);
+	else
 		err = copy_msghdr_from_user(msg_sys, msg);
-		if (err)
-			return err;
-	}
+	if (err)
+		return err;
 
 	if (msg_sys->msg_iovlen > UIO_FASTIOV) {
 		err = -EMSGSIZE;
@@ -2226,14 +2268,12 @@ static int ___sys_recvmsg(struct socket *sock, struct msghdr __user *msg,
 	struct sockaddr __user *uaddr;
 	int __user *uaddr_len;
 
-	if (MSG_CMSG_COMPAT & flags) {
-		if (get_compat_msghdr(msg_sys, msg_compat))
-			return -EFAULT;
-	} else {
+	if (MSG_CMSG_COMPAT & flags)
+		err = get_compat_msghdr(msg_sys, msg_compat);
+	else
 		err = copy_msghdr_from_user(msg_sys, msg);
-		if (err)
-			return err;
-	}
+	if (err)
+		return err;
 
 	if (msg_sys->msg_iovlen > UIO_FASTIOV) {
 		err = -EMSGSIZE;
@@ -2356,8 +2396,10 @@ int __sys_recvmmsg(int fd, struct mmsghdr __user *mmsg, unsigned int vlen,
 		return err;
 
 	err = sock_error(sock->sk);
-	if (err)
+	if (err) {
+		datagrams = err;
 		goto out_put;
+	}
 
 	entry = mmsg;
 	compat_entry = (struct compat_mmsghdr __user *)mmsg;
@@ -2411,13 +2453,14 @@ int __sys_recvmmsg(int fd, struct mmsghdr __user *mmsg, unsigned int vlen,
 			break;
 	}
 
-out_put:
-	fput_light(sock->file, fput_needed);
-
 	if (err == 0)
-		return datagrams;
+		goto out_put;
 
-	if (datagrams != 0) {
+	if (datagrams == 0) {
+		datagrams = err;
+		goto out_put;
+	}
+
 		/*
 		 * We may return less entries than requested (vlen) if the
 		 * sock is non block and there aren't enough datagrams...
@@ -2432,10 +2475,10 @@ out_put:
 			sock->sk->sk_err = -err;
 		}
 
-		return datagrams;
-	}
+out_put:
+		fput_light(sock->file, fput_needed);
 
-	return err;
+		return datagrams;
 }
 
 SYSCALL_DEFINE5(recvmmsg, int, fd, struct mmsghdr __user *, mmsg,

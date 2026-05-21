@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2013 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2013, 2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -23,11 +23,6 @@
  * This file was originally distributed by Qualcomm Atheros, Inc.
  * under proprietary terms before Copyright ownership was assigned
  * to the Linux Foundation.
- */
-
-/*
- * Copyright (c) 2008 QUALCOMM Incorporated. All Rights Reserved.
- * Qualcomm Confidential and Proprietary 
  */
 
 /* This file is generated from btampFsm.cdd - do not edit manually*/
@@ -55,6 +50,9 @@ typedef enum
   eSAP_MAC_START_FAILS,
   eSAP_HDD_STOP_INFRA_BSS,
   eSAP_WRITE_REMOTE_AMP_ASSOC,
+  eSAP_CHANNEL_SWITCH_ANNOUNCEMENT_START,
+  eWNI_ECSA_TX_COMPLETED,
+  eWNI_ECSA_CHANNEL_CHANGE_RSP,
 
   eSAP_NO_MSG
 }eSapMsg_t;
