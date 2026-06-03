@@ -1720,7 +1720,7 @@ static void posix_lock_to_flock64(struct flock64 *flock, struct file_lock *fl)
 /* Report the first existing lock that would conflict with l.
  * This implements the F_GETLK command of fcntl().
  */
-int fcntl_getlk(struct file *filp, struct flock __user *l)
+int fcntl_getlk(struct file *filp, unsigned int cmd, struct flock __user *l)
 {
 	struct file_lock file_lock;
 	struct flock flock;
@@ -1856,7 +1856,31 @@ again:
 	error = flock_to_posix_lock(filp, file_lock, &flock);
 	if (error)
 		goto out;
-	if (cmd == F_SETLKW) {
+
+	/*
+	 * If the cmd is requesting file-private locks, then set the
+	 * FL_OFDLCK flag and override the owner.
+	 */
+	switch (cmd) {
+	case F_OFD_SETLK:
+		error = -EINVAL;
+		if (flock.l_pid != 0)
+			goto out;
+
+		cmd = F_SETLK;
+		file_lock->fl_flags |= FL_OFDLCK;
+		file_lock->fl_owner = filp;
+		break;
+	case F_OFD_SETLKW:
+		error = -EINVAL;
+		if (flock.l_pid != 0)
+			goto out;
+
+		cmd = F_SETLKW;
+		file_lock->fl_flags |= FL_OFDLCK;
+		file_lock->fl_owner = filp;
+		/* Fallthrough */
+	case F_SETLKW:
 		file_lock->fl_flags |= FL_SLEEP;
 	}
 	
@@ -1905,7 +1929,7 @@ out:
 /* Report the first existing lock that would conflict with l.
  * This implements the F_GETLK command of fcntl().
  */
-int fcntl_getlk64(struct file *filp, struct flock64 __user *l)
+int fcntl_getlk64(struct file *filp, unsigned int cmd, struct flock64 __user *l)
 {
 	struct file_lock file_lock;
 	struct flock64 flock;
@@ -1974,7 +1998,31 @@ again:
 	error = flock64_to_posix_lock(filp, file_lock, &flock);
 	if (error)
 		goto out;
-	if (cmd == F_SETLKW64) {
+
+	/*
+	 * If the cmd is requesting file-private locks, then set the
+	 * FL_OFDLCK flag and override the owner.
+	 */
+	switch (cmd) {
+	case F_OFD_SETLK:
+		error = -EINVAL;
+		if (flock.l_pid != 0)
+			goto out;
+
+		cmd = F_SETLK;
+		file_lock->fl_flags |= FL_OFDLCK;
+		file_lock->fl_owner = filp;
+		break;
+	case F_OFD_SETLKW:
+		error = -EINVAL;
+		if (flock.l_pid != 0)
+			goto out;
+
+		cmd = F_SETLKW;
+		file_lock->fl_flags |= FL_OFDLCK;
+		file_lock->fl_owner = filp;
+		/* Fallthrough */
+	case F_SETLKW64:
 		file_lock->fl_flags |= FL_SLEEP;
 	}
 	
@@ -2080,16 +2128,28 @@ void locks_remove_flock(struct file *filp)
 
 	while ((fl = *before) != NULL) {
 		if (fl->fl_file == filp) {
-			if (IS_FLOCK(fl)) {
-				locks_delete_lock(before);
-				continue;
-			}
 			if (IS_LEASE(fl)) {
 				lease_modify(before, F_UNLCK);
 				continue;
 			}
-			/* What? */
-			BUG();
+
+			/*
+			 * There's a leftover lock on the list of a type that
+			 * we didn't expect to see. Most likely a classic
+			 * POSIX lock that ended up not getting released
+			 * properly, or that raced onto the list somehow. Log
+			 * some info about it and then just remove it from
+			 * the list.
+			 */
+			WARN(!IS_FLOCK(fl),
+				"leftover lock: dev=%u:%u ino=%lu type=%hhd flags=0x%x start=%lld end=%lld\n",
+				MAJOR(inode->i_sb->s_dev),
+				MINOR(inode->i_sb->s_dev), inode->i_ino,
+				fl->fl_type, fl->fl_flags,
+				fl->fl_start, fl->fl_end);
+
+			locks_delete_lock(before);
+			continue;
  		}
 		before = &fl->fl_next;
 	}
