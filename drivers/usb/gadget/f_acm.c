@@ -20,7 +20,6 @@
 #include <linux/module.h>
 #include <linux/device.h>
 #include <linux/err.h>
-
 #ifndef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
 #include "usb_gadget_xport.h"
 #endif
@@ -144,7 +143,7 @@ static int acm_port_connect(struct f_acm *acm)
 	port_num = gacm_ports[acm->port_num].client_port_num;
 
 
-	pr_debug("%s: transport:%s f_acm:%pK gserial:%pK port_num:%d cl_port_no:%d\n",
+	pr_debug("%s: transport:%s f_acm:%p gserial:%p port_num:%d cl_port_no:%d\n",
 			__func__, xport_to_str(acm->transport),
 			acm, &acm->port, acm->port_num, port_num);
 
@@ -170,7 +169,7 @@ static int acm_port_disconnect(struct f_acm *acm)
 
 	port_num = gacm_ports[acm->port_num].client_port_num;
 
-	pr_debug("%s: transport:%s f_acm:%pK gserial:%pK port_num:%d cl_pno:%d\n",
+	pr_debug("%s: transport:%s f_acm:%p gserial:%p port_num:%d cl_pno:%d\n",
 			__func__, xport_to_str(acm->transport),
 			acm, &acm->port, acm->port_num, port_num);
 
@@ -190,6 +189,7 @@ static int acm_port_disconnect(struct f_acm *acm)
 	return 0;
 }
 #endif
+
 /*-------------------------------------------------------------------------*/
 
 /* notification endpoint uses smallish and infrequent fixed-size messages */
@@ -485,8 +485,10 @@ static int acm_setup(struct usb_function *f, const struct usb_ctrlrequest *ctrl)
 	/* GET_LINE_CODING ... return what host sent, or initial value */
 	case ((USB_DIR_IN | USB_TYPE_CLASS | USB_RECIP_INTERFACE) << 8)
 			| USB_CDC_REQ_GET_LINE_CODING:
+#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
 		if (w_index != acm->ctrl_id)
 			goto invalid;
+#endif
 
 		value = min_t(unsigned, w_length,
 				sizeof(struct usb_cdc_line_coding));
@@ -496,8 +498,10 @@ static int acm_setup(struct usb_function *f, const struct usb_ctrlrequest *ctrl)
 	/* SET_CONTROL_LINE_STATE ... save what the host sent */
 	case ((USB_DIR_OUT | USB_TYPE_CLASS | USB_RECIP_INTERFACE) << 8)
 			| USB_CDC_REQ_SET_CONTROL_LINE_STATE:
+#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
 		if (w_index != acm->ctrl_id)
 			goto invalid;
+#endif
 
 		value = 0;
 
@@ -554,12 +558,11 @@ static int acm_set_alt(struct usb_function *f, unsigned intf, unsigned alt)
 		if (acm->notify->driver_data) {
 			VDBG(cdev, "reset acm control interface %d\n", intf);
 			usb_ep_disable(acm->notify);
-		}
-
-		if (!acm->notify->desc)
+		} else {
+			VDBG(cdev, "init acm ctrl interface %d\n", intf);
 			if (config_ep_by_speed(cdev->gadget, f, acm->notify))
 				return -EINVAL;
-
+		}
 		usb_ep_enable(acm->notify);
 		acm->notify->driver_data = acm;
 
@@ -671,15 +674,13 @@ static int acm_notify_serial_state(struct f_acm *acm)
 {
 	struct usb_composite_dev *cdev = acm->port.func.config->cdev;
 	int			status;
-	__le16			serial_state;
 
 	spin_lock(&acm->lock);
 	if (acm->notify_req) {
 		DBG(cdev, "acm ttyGS%d serial state %04x\n",
 				acm->port_num, acm->serial_state);
-		serial_state = cpu_to_le16(acm->serial_state);
 		status = acm_cdc_notify(acm, USB_CDC_NOTIFY_SERIAL_STATE,
-				0, &serial_state, sizeof(acm->serial_state));
+				0, &acm->serial_state, sizeof(acm->serial_state));
 	} else {
 		acm->pending = true;
 		status = 0;
@@ -863,6 +864,7 @@ acm_bind(struct usb_configuration *c, struct usb_function *f)
 #ifdef CONFIG_USB_DUN_SUPPORT
 	modem_register(acm);
 #endif
+
 	return 0;
 
 fail:
@@ -877,7 +879,7 @@ fail:
 	if (acm->port.in)
 		acm->port.in->driver_data = NULL;
 
-	ERROR(cdev, "%s/%pK: can't bind, err %d\n", f->name, f, status);
+	ERROR(cdev, "%s/%p: can't bind, err %d\n", f->name, f, status);
 
 	return status;
 }
@@ -891,8 +893,8 @@ static void acm_unbind(struct usb_configuration *c, struct usb_function *f)
 #endif
 
 	/* acm_string_defs[].id is limited to 256
-	 * if id is cleared on disconneting, The increased number is allocated on connecting.
-	 * ACM driver can't connect to host when id is over 256 */
+	if id is cleared on disconneting, The increased number is allocated on connecting.
+	ACM driver can't connect to host when id is over 256 */
 #ifndef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
 	acm_string_defs[0].id = 0;
 #endif

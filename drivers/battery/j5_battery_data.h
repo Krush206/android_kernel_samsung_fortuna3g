@@ -1,17 +1,13 @@
-#if defined(CONFIG_MACH_J5LTE_CHN_CMCC)
-#define CAPACITY_MAX			970
-#else
 #define CAPACITY_MAX			1000
-#endif
-#define CAPACITY_MAX_MARGIN     70
+#define CAPACITY_MAX_MARGIN     30
 #define CAPACITY_MIN			0
 
 static sec_bat_adc_table_data_t temp_table[] = {
   {25950, 900},
   {26173, 850},
-  {26506, 800},
-  {26843, 750},
-  {27157, 700},
+  {26450, 800},
+  {26720, 750},
+  {27103, 700},
   {27569, 650},
   {28152, 600},
   {28623, 550},

@@ -37,7 +37,6 @@ struct clock_data {
 
 static struct hrtimer sched_clock_timer;
 static int irqtime = -1;
-static int initialized;
 
 core_param(irqtime, irqtime, int, 0400);
 
@@ -77,7 +76,7 @@ static unsigned long long notrace sched_clock_32(void)
 	u64 cyc;
 	unsigned long seq;
 #ifdef CONFIG_SEC_DEBUG
-	u64 local;
+		u64 local;
 #endif
 	if (cd.suspended)
 		return cd.epoch_ns;
@@ -91,11 +90,10 @@ static unsigned long long notrace sched_clock_32(void)
 	cyc = read_sched_clock();
 	cyc = (cyc - epoch_cyc) & sched_clock_mask;
 #ifdef CONFIG_SEC_DEBUG
-        local = epoch_ns + cyc_to_ns(cyc, cd.mult, cd.shift);
-        sec_debug_save_last_ns(local);
-        return local;
+	local = epoch_ns + cyc_to_ns(cyc, cd.mult, cd.shift);
+	sec_debug_save_last_ns(local);
+	return local;
 #endif
-
 	return epoch_ns + cyc_to_ns(cyc, cd.mult, cd.shift);
 }
 
@@ -146,11 +144,6 @@ void __init sched_clock_register(u64 (*read)(void), int bits,
 	/* calculate the mult/shift to convert counter ticks to ns. */
 	clocks_calc_mult_shift(&cd.mult, &cd.shift, rate, NSEC_PER_SEC, 3600);
 
-	if (sched_clock_timer.function != NULL) {
-		/* update timeout for clock wrap */
-		hrtimer_start(&sched_clock_timer, cd.wrap_kt, HRTIMER_MODE_REL);
-	}
-
 	r = rate;
 	if (r >= 4000000) {
 		r /= 1000000;
@@ -197,11 +190,6 @@ unsigned long long notrace sched_clock(void)
 	return sched_clock_func();
 }
 
-int sched_clock_initialized(void)
-{
-	return initialized;
-}
-
 void __init sched_clock_postinit(void)
 {
 	/*
@@ -220,8 +208,6 @@ void __init sched_clock_postinit(void)
 	hrtimer_init(&sched_clock_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	sched_clock_timer.function = sched_clock_poll;
 	hrtimer_start(&sched_clock_timer, cd.wrap_kt, HRTIMER_MODE_REL);
-
-	initialized = 1;
 }
 
 static int sched_clock_suspend(void)

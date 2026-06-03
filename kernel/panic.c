@@ -22,7 +22,6 @@
 #include <linux/sysrq.h>
 #include <linux/init.h>
 #include <linux/nmi.h>
-#include <linux/console.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/exception.h>
@@ -129,10 +128,9 @@ void panic(const char *fmt, ...)
 		dump_stack();
 #endif
 #ifdef CONFIG_SEC_DEBUG_SUBSYS
-			sec_debug_save_panic_info(buf,
-				(unsigned int)__builtin_return_address(0));
+	sec_debug_save_panic_info(buf,
+			(unsigned int)__builtin_return_address(0));
 #endif
-
 	/*
 	 * If we have crashed and we have a crash kernel loaded let it handle
 	 * everything else.
@@ -149,14 +147,9 @@ void panic(const char *fmt, ...)
 
 	kmsg_dump(KMSG_DUMP_PANIC);
 
-	if (is_console_locked())
-		console_unlock();
-
 	atomic_notifier_call_chain(&panic_notifier_list, 0, buf);
 
 	bust_spinlocks(0);
-
-	console_flush_on_panic();
 
 	if (!panic_blink)
 		panic_blink = no_blink;

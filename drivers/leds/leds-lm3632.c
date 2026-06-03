@@ -394,34 +394,25 @@ static int flash_parse_dt(struct device *dev,
 }
 
 
-int flash_request_gpio(struct lm3632_flash_platform_data *pdata)
+void flash_request_gpio(struct lm3632_flash_platform_data *pdata)
 {
-	int ret;
-	if(!pdata){
-		printk("flash_Request_gpio pdata is null!!\n");
-		return -EINVAL;
-	}
-
-	if(!pdata->gpio_flash_en || !pdata->gpio_flash_int){
-		printk("flash_Request_gpio is null!!\n");
-		return -EINVAL;
-	}
-
-	if (gpio_is_valid(pdata->gpio_flash_en)) {
-		ret = gpio_request(pdata->gpio_flash_en, "flash-en");
-		if (ret) {
-			printk(KERN_ERR "%s: unable to request gpio_flash_en [%d]\n",
-				__func__, pdata->gpio_flash_en);
-		}
-	}
-	if (gpio_is_valid(pdata->gpio_flash_int)) {
-		ret = gpio_request(pdata->gpio_flash_int, "flash-int");
-		if (ret) {
-			printk(KERN_ERR "%s: unable to request gpio_flash_int [%d]\n",
-				__func__, pdata->gpio_flash_int);
-		}
-	}
-	return 0;
+  int ret;
+  if (gpio_is_valid(pdata->gpio_flash_en)) {
+    ret = gpio_request(pdata->gpio_flash_en, "flash-en");
+    if (ret) {
+      printk(KERN_ERR "%s: unable to request gpio_flash_en [%d]\n",
+        __func__, pdata->gpio_flash_en);
+      return;
+    }
+  }
+  if (gpio_is_valid(pdata->gpio_flash_int)) {
+    ret = gpio_request(pdata->gpio_flash_int, "flash-int");
+    if (ret) {
+      printk(KERN_ERR "%s: unable to request gpio_flash_int [%d]\n",
+        __func__, pdata->gpio_flash_int);
+      return;
+    }
+  }
 }EXPORT_SYMBOL_GPL(flash_request_gpio);
 
 
@@ -442,12 +433,7 @@ static const struct v4l2_ctrl_ops ssflash_led_ctrl_ops = {
 
 void ssflash_led_turn_on()
 {
-	int ret = 0;
-	ret = flash_request_gpio(pdata);
-	if(ret < 0){
-		printk("Need to not to use ssflash_led_turn_on");
-		return;
-	}
+	flash_request_gpio(pdata);
 
 	pr_err("ssflash_led_turn_on \n");
 
@@ -471,12 +457,7 @@ void ssflash_led_turn_on()
 
 void ssflash_led_turn_off()
 {
-	int ret = 0;
-	ret = flash_request_gpio(pdata);
-	if(ret < 0){
-		printk("Need to not to use ssflash_led_turn_on");
-		return;
-	}
+	flash_request_gpio(pdata);
 
 	pr_err("ssflash_led_turn_off\n");
 
@@ -491,8 +472,6 @@ void ssflash_led_turn_off()
 		gpio_direction_output(info->pdata->gpio_flash_en,0);
 	}
 	msleep(5);
-	gpio_free(pdata->gpio_flash_en);
-	gpio_free(pdata->gpio_flash_int);
 
 }EXPORT_SYMBOL_GPL(ssflash_led_turn_off);
 
@@ -638,8 +617,6 @@ static ssize_t flash_store(struct device *dev, struct device_attribute *attr,
 			if (gpio_is_valid(ffl_info->pdata->gpio_flash_en)){
 				gpio_direction_output(ffl_info->pdata->gpio_flash_en,0);
 			}
-			gpio_free(pdata->gpio_flash_int);
-			gpio_free(pdata->gpio_flash_en);
 			break;
 
 		case 1:
@@ -655,8 +632,6 @@ static ssize_t flash_store(struct device *dev, struct device_attribute *attr,
 			if (gpio_is_valid(ffl_info->pdata->gpio_flash_en)){
 				gpio_direction_output(ffl_info->pdata->gpio_flash_en,1);
 			}
-			gpio_free(pdata->gpio_flash_en);
-			gpio_free(pdata->gpio_flash_int);
 			break;
 
 		case 100:
@@ -672,8 +647,6 @@ static ssize_t flash_store(struct device *dev, struct device_attribute *attr,
 			if (gpio_is_valid(ffl_info->pdata->gpio_flash_en)){
 				gpio_direction_output(ffl_info->pdata->gpio_flash_en,1);
 			}
-			gpio_free(pdata->gpio_flash_en);
-			gpio_free(pdata->gpio_flash_int);
 			break;
 
 		default:

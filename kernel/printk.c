@@ -53,8 +53,6 @@
 #include <linux/proc_fs.h>
 #endif
 
-
-
 #define CREATE_TRACE_POINTS
 #include <trace/events/printk.h>
 
@@ -118,7 +116,7 @@ static struct console *exclusive_console;
  */
 struct console_cmdline
 {
-	char	name[16];			/* Name of the driver	    */
+	char	name[8];			/* Name of the driver	    */
 	int	index;				/* Minor dev. to use	    */
 	char	*options;			/* Options for the driver   */
 #ifdef CONFIG_A11Y_BRAILLE_CONSOLE
@@ -133,9 +131,7 @@ static int selected_console = -1;
 static int preferred_console = -1;
 int console_set_on_cmdline;
 EXPORT_SYMBOL(console_set_on_cmdline);
-#ifdef CONFIG_PANIC_ON_RT_THROTTLING
-int console_null_state;
-#endif
+
 /* Flag: console code may call schedule() */
 static int console_may_schedule;
 
@@ -241,7 +237,6 @@ struct log {
 static DEFINE_RAW_SPINLOCK(logbuf_lock);
 
 #ifdef CONFIG_PRINTK
-
 #ifdef CONFIG_SEC_DEBUG
 static void sec_log_add(const struct log *msg);
 #endif
@@ -304,6 +299,11 @@ static phys_addr_t sec_log_reserve_base;
 static unsigned sec_log_end;
 unsigned sec_log_reserve_size;
 unsigned int *sec_log_irq_en;
+#if !defined(CONFIG_SAMSUNG_PRODUCT_SHIP) && defined(CONFIG_SEC_LOG_LAST_KMSG)
+#define LAST_LOG_BUF_SHIFT 19
+static char *last_kmsg_buffer;
+static unsigned last_kmsg_size;
+#endif /* CONFIG_SEC_LOG_LAST_KMSG */
 #endif /* CONFIG_PRINTK_NOCACHE */
 #endif
 
@@ -545,6 +545,7 @@ static void log_store(int facility, int level,
 	/* Save the log here,using "msg".*/
 	sec_log_add(msg);
 #endif
+	
 	/* insert message */
 	log_next_idx += msg->len;
 	log_next_seq++;
@@ -754,7 +755,7 @@ static ssize_t devkmsg_read(struct file *file, char __user *buf,
 		 ((user->prev & LOG_CONT) && !(msg->flags & LOG_PREFIX)))
 		cont = '+';
 
-	len = sprintf(user->buf, "%u,%llu,%llu,%c;",
+	len = snprintf(user->buf, __LOG_BUF_LEN, "%u,%llu,%llu,%c;",
 		      (msg->facility << 3) | msg->level,
 		      user->seq, ts_usec, cont);
 	user->prev = msg->flags;
@@ -1226,8 +1227,7 @@ static int syslog_oops_buf_print(char __user *buf, int size, char *text)
 	int len = 0;
 
 	raw_spin_lock_irq(&logbuf_lock);
-	if (log_oops_first_seq != ULLONG_MAX &&
-	    syslog_seq < log_oops_first_seq) {
+	if (syslog_seq < log_oops_first_seq) {
 		syslog_seq = log_oops_first_seq;
 		syslog_oops_buf_idx = 0;
 	}
@@ -1656,7 +1656,7 @@ static void call_console_drivers(int level, const char *text, size_t len)
 {
 	struct console *con;
 
-	trace_console_rcuidle(text, len);
+	trace_console(text, len);
 
 	if (level >= console_loglevel && !ignore_loglevel)
 		return;
@@ -1758,6 +1758,7 @@ static int console_trylock_for_printk(unsigned int cpu)
 	raw_spin_unlock(&logbuf_lock);
 	if (wake)
 		up(&console_sem);
+
 	return retval;
 }
 
@@ -2089,8 +2090,8 @@ static void sec_log_add_on_bootup(void)
 
 #ifdef CONFIG_SEC_DEBUG_SUBSYS
 void sec_debug_subsys_set_kloginfo(unsigned int *first_idx_paddr,
-	unsigned int *next_idx_paddr, unsigned int *log_paddr,
-	unsigned int *size)
+		unsigned int *next_idx_paddr, unsigned int *log_paddr,
+		unsigned int *size)
 {
 	*first_idx_paddr = (unsigned int)__pa(&log_first_idx);
 	*next_idx_paddr = (unsigned int)__pa(&log_next_idx);
@@ -2099,10 +2100,31 @@ void sec_debug_subsys_set_kloginfo(unsigned int *first_idx_paddr,
 }
 #endif
 
+#if !defined(CONFIG_SAMSUNG_PRODUCT_SHIP) && defined(CONFIG_SEC_LOG_LAST_KMSG)
+static int __init sec_log_save_old(void)
+{
+	/* provide previous log as last_kmsg */
+	last_kmsg_size =
+		min((unsigned)(1 << LAST_LOG_BUF_SHIFT), *sec_log_ptr);
+	last_kmsg_buffer = kmalloc(last_kmsg_size, GFP_KERNEL);
+
+	if (last_kmsg_size && last_kmsg_buffer && sec_log_buf) {
+		unsigned int i;
+		for (i = 0; i < last_kmsg_size; i++)
+			last_kmsg_buffer[i] =
+				sec_log_buf[(*sec_log_ptr - last_kmsg_size +
+						i) & (sec_log_size - 1)];
+		return 1;
+	} else {
+		return 0;
+	}
+}
+#else
 static int __init sec_log_save_old(void)
 {
 	return 1;
 }
+#endif
 
 #ifdef CONFIG_SEC_DEBUG_PRINTK_NOCACHE
 static int __init printk_remap_nocache(void)
@@ -2115,11 +2137,11 @@ static int __init printk_remap_nocache(void)
 
 	/*sec_getlog_supply_kloginfo(log_buf);*/
 
-#if defined(CONFIG_SAMSUNG_PRODUCT_SHIP)
+#if !defined(CONFIG_SEC_DEBUG_NOCACHE_LOG_IN_LEVEL_LOW) || defined(CONFIG_SAMSUNG_PRODUCT_SHIP)
 	if (0 == sec_debug_is_enabled()) {
 #ifdef CONFIG_SEC_DEBUG_LOW_LOG
 		nocache_base = ioremap_nocache(sec_log_save_base - 4096,
-		sec_log_save_size + 8192);
+				sec_log_save_size + 8192);
 		nocache_base = nocache_base + 4096;
 
 		sec_log_mag = nocache_base - 8;
@@ -2134,22 +2156,22 @@ static int __init printk_remap_nocache(void)
 
 #ifdef CONFIG_ARM_LPAE
 	pr_err("%s: sec_log_save_size %d at sec_log_save_base 0x%llx\n",
-	__func__, sec_log_save_size, sec_log_save_base);
+			__func__, sec_log_save_size, sec_log_save_base);
 
 	pr_err("%s: sec_log_reserve_size %d at sec_log_reserve_base 0x%llx\n",
-	__func__, sec_log_reserve_size, sec_log_reserve_base);
+			__func__, sec_log_reserve_size, sec_log_reserve_base);
 #else
 	pr_err("%s: sec_log_save_size %d at sec_log_save_base 0x%lx\n",
-		__func__, sec_log_save_size,
-		(unsigned long) sec_log_save_base);
+			__func__, sec_log_save_size,
+			(unsigned long) sec_log_save_base);
 
 	pr_err("%s: sec_log_reserve_size %d at sec_log_reserve_base 0x%lx\n",
-		__func__, sec_log_reserve_size,
-		(unsigned long) sec_log_reserve_base);
+			__func__, sec_log_reserve_size,
+			(unsigned long) sec_log_reserve_base);
 #endif
 
 	nocache_base = ioremap_nocache((phys_addr_t)(sec_log_save_base-4096),
-					sec_log_save_size + 8192);
+			sec_log_save_size + 8192);
 
 	if (!nocache_base) {
 		pr_err("Failed to remap nocache log region\n");
@@ -2158,11 +2180,11 @@ static int __init printk_remap_nocache(void)
 
 #ifdef CONFIG_ARM_LPAE
 	pr_err("%s: nocache_base printk virtual addrs 0x%x phy=0x%llx\n",
-		__func__, (unsigned int)(nocache_base), sec_log_save_base);
+			__func__, (unsigned int)(nocache_base), sec_log_save_base);
 #else
 	pr_err("%s: nocache_base printk virtual addrs 0x%x phy=0x%lx\n",
-		__func__, (unsigned int)(nocache_base),
-		(unsigned long) sec_log_save_base);
+			__func__, (unsigned int)(nocache_base),
+			(unsigned long) sec_log_save_base);
 #endif
 
 	nocache_base = nocache_base + 4096;
@@ -2182,19 +2204,33 @@ static int __init printk_remap_nocache(void)
 
 	raw_spin_lock_irqsave(&logbuf_lock, flags);
 	/*We have to save logs printed prior to
-	the sec log initialization here.*/
+	  the sec log initialization here.*/
 	sec_log_add_on_bootup();
 	raw_spin_unlock_irqrestore(&logbuf_lock, flags);
+#if !defined(CONFIG_SAMSUNG_PRODUCT_SHIP) && defined(CONFIG_SEC_LOG_LAST_KMSG)
+	if (bOk) {
+		pr_info("%s: saved old log at %d@%p\n",
+				__func__, last_kmsg_size, last_kmsg_buffer);
+	} else {
+		pr_err("%s: failed saving old log %d@%p\n",
+				__func__, last_kmsg_size, last_kmsg_buffer);
+	}
+#endif
 	return rc;
 }
 
 static ssize_t seclog_read(struct file *file, char __user *buf,
-				    size_t len, loff_t *offset)
+		size_t len, loff_t *offset)
 {
 	loff_t pos = *offset;
 	ssize_t count = 0;
+#if !defined(CONFIG_SAMSUNG_PRODUCT_SHIP) && defined(CONFIG_SEC_LOG_LAST_KMSG)
+	size_t log_size = last_kmsg_size;
+	const char *log = last_kmsg_buffer;
+#else
 	size_t log_size = sec_log_size;
 	const char *log = sec_log_buf;
+#endif
 
 	if (pos < log_size) {
 		count = min(len, (size_t)(log_size - pos));
@@ -2232,7 +2268,11 @@ static int __init seclog_late_init(void)
 		return 0;
 	}
 
+#if !defined(CONFIG_SAMSUNG_PRODUCT_SHIP) && defined(CONFIG_SEC_LOG_LAST_KMSG)
+	proc_set_size(entry, last_kmsg_size);
+#else
 	proc_set_size(entry, sec_log_size);
+#endif
 	return 0;
 }
 late_initcall(seclog_late_init);
@@ -2262,6 +2302,7 @@ static int __init sec_log_setup(char *str)
 __setup("sec_log=", sec_log_setup);
 
 #endif
+
 
 
 
@@ -2398,10 +2439,6 @@ static int __init console_setup(char *str)
 	char *s, *options, *brl_options = NULL;
 	int idx;
 
-#ifdef CONFIG_PANIC_ON_RT_THROTTLING
-	if (!memcmp(str, "null", 4))
-		console_null_state = 1;
-#endif
 #ifdef CONFIG_A11Y_BRAILLE_CONSOLE
 	if (!memcmp(str, "brl,", 4)) {
 		brl_options = "";
@@ -2663,24 +2700,13 @@ void console_unlock(void)
 	static u64 seen_seq;
 	unsigned long flags;
 	bool wake_klogd = false;
-	bool do_cond_resched, retry;
+	bool retry;
 
 	if (console_suspended) {
 		up(&console_sem);
 		return;
 	}
 
-	/*
-	 * Console drivers are called under logbuf_lock, so
-	 * @console_may_schedule should be cleared before; however, we may
-	 * end up dumping a lot of lines, for example, if called from
-	 * console registration path, and should invoke cond_resched()
-	 * between lines if allowable.  Not doing so can cause a very long
-	 * scheduling stall on a slow console leading to RCU stall and
-	 * softlockup warnings which exacerbate the issue with more
-	 * messages practically incapacitating the system.
-	 */
-	do_cond_resched = console_may_schedule;
 	console_may_schedule = 0;
 
 	/* flush buffered message fragment immediately to console */
@@ -2737,9 +2763,6 @@ skip:
 		call_console_drivers(level, text, len);
 		start_critical_timings();
 		local_irq_restore(flags);
-
-		if (do_cond_resched)
-			cond_resched();
 	}
 	console_locked = 0;
 	mutex_release(&console_lock_dep_map, 1, _RET_IP_);
@@ -2805,25 +2828,6 @@ void console_unblank(void)
 	for_each_console(c)
 		if ((c->flags & CON_ENABLED) && c->unblank)
 			c->unblank();
-	console_unlock();
-}
-
-/**
- * console_flush_on_panic - flush console content on panic
- *
- * Immediately output all pending messages no matter what.
- */
-void console_flush_on_panic(void)
-{
-	/*
-	 * If someone else is holding the console lock, trylock will fail
-	 * and may_schedule may be set.  Ignore and proceed to unlock so
-	 * that messages are flushed out.  As this can be called from any
-	 * context and we don't want to get preempted while flushing,
-	 * ensure may_schedule is cleared.
-	 */
-	console_trylock();
-	console_may_schedule = 0;
 	console_unlock();
 }
 
@@ -2953,8 +2957,6 @@ void register_console(struct console *newcon)
 	 */
 	for (i = 0; i < MAX_CMDLINECONSOLES && console_cmdline[i].name[0];
 			i++) {
-		BUILD_BUG_ON(sizeof(console_cmdline[i].name) !=
-			     sizeof(newcon->name));
 		if (strcmp(console_cmdline[i].name, newcon->name) != 0)
 			continue;
 		if (newcon->index >= 0 &&
@@ -3150,7 +3152,7 @@ void wake_up_klogd(void)
 	preempt_enable();
 }
 
-int printk_deferred(const char *fmt, ...)
+int printk_sched(const char *fmt, ...)
 {
 	unsigned long flags;
 	va_list args;
@@ -3585,7 +3587,6 @@ void show_regs_print_info(const char *log_lvl)
 	       log_lvl, current, current_thread_info(),
 	       task_thread_info(current));
 }
-
 #ifdef CONFIG_SEC_DEBUG_PRINTK_NOCACHE
 module_init(printk_remap_nocache);
 #endif

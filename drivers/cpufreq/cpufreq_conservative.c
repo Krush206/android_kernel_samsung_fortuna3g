@@ -50,6 +50,7 @@ static void cs_check_cpu(int cpu, unsigned int load)
 	struct cpufreq_policy *policy = dbs_info->cdbs.cur_policy;
 	struct dbs_data *dbs_data = policy->governor_data;
 	struct cs_dbs_tuners *cs_tuners = dbs_data->tuners;
+	cpufreq_notify_utilization(policy, load);
 
 	/*
 	 * break out if we 'cannot' reduce the speed as the user might
@@ -204,8 +205,8 @@ static ssize_t store_down_threshold(struct dbs_data *dbs_data, const char *buf,
 	int ret;
 	ret = sscanf(buf, "%u", &input);
 
-	/* cannot be lower than 1 otherwise freq will not fall */
-	if (ret != 1 || input < 1 || input > 100 ||
+	/* cannot be lower than 11 otherwise freq will not fall */
+	if (ret != 1 || input < 11 || input > 100 ||
 			input >= cs_tuners->up_threshold)
 		return -EINVAL;
 

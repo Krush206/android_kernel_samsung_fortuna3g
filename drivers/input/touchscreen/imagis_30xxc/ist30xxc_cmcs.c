@@ -354,9 +354,6 @@ int ist30xx_apply_cmcs_slope(struct ist30xx_data *data, CMCS_BUF *cmcs_buf)
 	s16 *pspec_max = (s16 *)cmcs_buf->spec_max;
 	s16 *pslope0 = (s16 *)cmcs_buf->slope0;
 	s16 *pslope1 = (s16 *)cmcs_buf->slope1;
-	s16 slope_x = 0;
-        s16 slope_y = 0;
-
 
 	memset(cmcs_buf->slope0, 0, sizeof(cmcs_buf->slope0));
 	memset(cmcs_buf->slope1, 0, sizeof(cmcs_buf->slope1));
@@ -428,68 +425,7 @@ int ist30xx_apply_cmcs_slope(struct ist30xx_data *data, CMCS_BUF *cmcs_buf)
 		printk("\n");
 	}
 #endif
-	if (data->dt_data->octa_hw) {
-		tsp_verb("# Apply slope\n");
-		for (i = 0; i < height; i++) {
-			for (j = 0; j < width; j++) {
-				idx1 = (i * tsp->ch_num.rx) + j;
-			idx2 = idx1 + 1;
-			if (j == (width - 1)) {
-				slope_x = 0;
-			} else {
-				slope_x = 100 - ((presult[idx1] * 100) / presult[idx2]);
-				if (slope_x < 0)
-					slope_x *= -1;
-			}
-			idx2 = idx1 + tsp->ch_num.rx;
-			if (i == (height - 1)) {
-				slope_y = 0;
-			}else {
-				slope_y = 100 - ((presult[idx1] * 100) / presult[idx2]);
-				if (slope_y < 0)
-					slope_y *= -1;
-			}
-			if (slope_x > slope_y) {
-				pslope0[idx1] = (s16)slope_x;
-				pslope1[idx1] = (s16)slope_x;
-			}else {
-				pslope0[idx1] = (s16)slope_y;
-				pslope1[idx1] = (s16)slope_y;
-			}
-			}
-		}
-		tsp_verb("# Apply slope_gtx\n");
-		for (i = 0; i < tsp->gtx.num; i++) {
-			if (tsp->gtx.ch_num[i] > height) {
-				for (j = 0; j < width; j++) {
-					idx1 = (tsp->gtx.ch_num[i] * tsp->ch_num.rx) + j;
-				idx2 = idx1 + 1;
-				if (j == (width - 1)) {
-					slope_x = 0;
-				} else {
-					slope_x = 100 - ((presult[idx1] * 100) / presult[idx2]);
-					if (slope_x < 0)
-						slope_x *= -1;
-				}
-				idx2 = idx1 + tsp->ch_num.rx;
-				if (i == (tsp->gtx.num - 1)) {
-					slope_y = 0;
-				} else {
-					slope_y = 100 - ((presult[idx1] * 100) / presult[idx2]);
-					if (slope_y < 0)
-						slope_y *= -1;
-				}
-				if (slope_x > slope_y) {
-					pslope0[idx1] = (s16)slope_x;
-					pslope1[idx1] = (s16)slope_x;
-				} else {
-					pslope0[idx1] = (s16)slope_y;
-					pslope1[idx1] = (s16)slope_y;
-				}
-				}
-			}
-		}
-	} else {
+
 	tsp_verb("# Apply slope0_x\n");
 	for (i = 0; i < height; i++) {
 		for (j = 0; j < width - 1; j++) {
@@ -545,7 +481,7 @@ int ist30xx_apply_cmcs_slope(struct ist30xx_data *data, CMCS_BUF *cmcs_buf)
 			}
 		}
 	}
-        }
+
 #if CMCS_PARSING_DEBUG
 	tsp_info("# slope0_x\n");
 	for (i = 0; i < height; i++) {
@@ -1064,6 +1000,7 @@ err_fw_size:
 	if (buff)
 		kfree(buff);
 err_alloc:
+	if (fp)
 		filp_close(fp, NULL);
 err_file_open:
 	set_fs(old_fs);

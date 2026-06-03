@@ -12,7 +12,6 @@
 #include <linux/percpu.h>
 #include <linux/kthread.h>
 #include <linux/smpboot.h>
-#include <linux/kmemleak.h>
 
 #include "smpboot.h"
 
@@ -175,8 +174,6 @@ __smpboot_create_thread(struct smp_hotplug_thread *ht, unsigned int cpu)
 	td = kzalloc_node(sizeof(*td), GFP_KERNEL, cpu_to_node(cpu));
 	if (!td)
 		return -ENOMEM;
-
-	kmemleak_not_leak(td);
 	td->cpu = cpu;
 	td->ht = ht;
 
@@ -186,11 +183,6 @@ __smpboot_create_thread(struct smp_hotplug_thread *ht, unsigned int cpu)
 		kfree(td);
 		return PTR_ERR(tsk);
 	}
-	/*
-	 * Park the thread so that it could start right on the CPU
-	 * when it is available.
-	 */
-	kthread_park(tsk);
 	get_task_struct(tsk);
 	*per_cpu_ptr(ht->store, cpu) = tsk;
 	if (ht->create) {
@@ -287,7 +279,6 @@ int smpboot_register_percpu_thread(struct smp_hotplug_thread *plug_thread)
 	unsigned int cpu;
 	int ret = 0;
 
-	get_online_cpus();
 	mutex_lock(&smpboot_threads_lock);
 	for_each_online_cpu(cpu) {
 		ret = __smpboot_create_thread(plug_thread, cpu);
@@ -300,7 +291,6 @@ int smpboot_register_percpu_thread(struct smp_hotplug_thread *plug_thread)
 	list_add(&plug_thread->list, &hotplug_threads);
 out:
 	mutex_unlock(&smpboot_threads_lock);
-	put_online_cpus();
 	return ret;
 }
 EXPORT_SYMBOL_GPL(smpboot_register_percpu_thread);

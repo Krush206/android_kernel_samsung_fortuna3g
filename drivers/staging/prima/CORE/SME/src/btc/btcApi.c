@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2017 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2013 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -31,6 +31,8 @@
 *
 * Description: Routines that make up the BTC API.
 *
+* Copyright 2008 (c) Qualcomm, Incorporated. All Rights Reserved.
+* Qualcomm Confidential and Proprietary.
 *
 ******************************************************************************/
 #include "wlan_qct_wda.h"
@@ -41,7 +43,6 @@
 #include "cfgApi.h"
 #include "pmc.h"
 #include "smeQosInternal.h"
-#include "sme_Trace.h"
 #ifdef FEATURE_WLAN_DIAG_SUPPORT
 #include "vos_diag_core_event.h"
 #include "vos_diag_core_log.h"
@@ -96,8 +97,7 @@ VOS_STATUS btcOpen (tHalHandle hHal)
    pMac->btc.btcReady = VOS_FALSE;
    pMac->btc.btcEventState = 0;
    pMac->btc.btcHBActive = VOS_TRUE;
-   pMac->btc.btc_scan_compromise_esco = false;
-   pMac->btc.btc_scan_compromise_sco = false;
+   pMac->btc.btcScanCompromise = VOS_FALSE;
 
    for (i = 0; i < MWS_COEX_MAX_VICTIM_TABLE; i++)
    {
@@ -275,8 +275,6 @@ static VOS_STATUS btcSendBTEvent(tpAniSirGlobal pMac, tpSmeBtEvent pBtEvent)
    msg.type = WDA_SIGNAL_BT_EVENT;
    msg.reserved = 0;
    msg.bodyptr = ptrSmeBtEvent;
-   MTRACE(vos_trace(VOS_MODULE_ID_SME,
-                 TRACE_CODE_SME_TX_WDA_MSG, NO_SESSION, msg.type));
    if(VOS_STATUS_SUCCESS != vos_mq_post_message(VOS_MODULE_ID_WDA, &msg))
    {
       VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR, "%s: "
@@ -559,8 +557,6 @@ VOS_STATUS btcSendCfgMsg(tHalHandle hHal, tpSmeBtcConfig pSmeBtcConfig)
    msg.type = WDA_BTC_SET_CFG;
    msg.reserved = 0;
    msg.bodyptr = ptrSmeBtcConfig;
-   MTRACE(vos_trace(VOS_MODULE_ID_SME,
-                 TRACE_CODE_SME_TX_WDA_MSG, NO_SESSION, msg.type));
    if(VOS_STATUS_SUCCESS != vos_mq_post_message(VOS_MODULE_ID_WDA, &msg))
    {
       VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR, "btcSendCfgMsg: "
@@ -1989,21 +1985,13 @@ eHalStatus btcHandleCoexInd(tHalHandle hHal, void* pMsg)
      }
      else if (pSmeCoexInd->coexIndType == SIR_COEX_IND_TYPE_SCAN_COMPROMISED)
      {
-         smsLog(pMac, LOGW,
-            FL("Coex indication SIR_COEX_IND_TYPE_SCAN_COMPROMISED data[0] %d"),
-            pSmeCoexInd->coexIndData[0]);
-
-         /* coexIndData[0] will be 1 for SCO call and 0 for eSCO call */
-         if (pSmeCoexInd->coexIndData[0])
-            pMac->btc.btc_scan_compromise_sco = true;
-         else
-            pMac->btc.btc_scan_compromise_esco = true;
-
+         pMac->btc.btcScanCompromise = VOS_TRUE;
+         smsLog(pMac, LOGW, "Coex indication in %s(), type - SIR_COEX_IND_TYPE_SCAN_COMPROMISED",
+             __func__);
      }
      else if (pSmeCoexInd->coexIndType == SIR_COEX_IND_TYPE_SCAN_NOT_COMPROMISED)
      {
-         pMac->btc.btc_scan_compromise_esco = false;
-         pMac->btc.btc_scan_compromise_sco = false;
+         pMac->btc.btcScanCompromise = VOS_FALSE;
          smsLog(pMac, LOGW, "Coex indication in %s(), type - SIR_COEX_IND_TYPE_SCAN_NOT_COMPROMISED",
              __func__);
      }
@@ -2024,18 +2012,6 @@ eHalStatus btcHandleCoexInd(tHalHandle hHal, void* pMsg)
                     "for BSSID "MAC_ADDRESS_STR,__func__,
                     MAC_ADDR_ARRAY(pMac->btc.btcBssfordisableaggr));
          }
-         if (pMac->roam.configParam.agg_btc_sco_enabled) {
-             /*
-              * If aggregation during SCO is enabled, first all BA sessions
-              * are deleted and then aggregation is re-enabled with configured
-              * block ack buffer as per SCO ini param.
-              */
-             ccmCfgSetInt(pMac, WNI_CFG_NUM_BUFF_ADVERT,
-                          pMac->roam.configParam.num_ba_buff_btc_sco, NULL,
-                          eANI_BOOLEAN_FALSE);
-             ccmCfgSetInt(pMac, WNI_CFG_DEL_ALL_RX_TX_BA_SESSIONS_2_4_G_BTC, 0,
-                          NULL, eANI_BOOLEAN_FALSE);
-         }
      }
      else if (pSmeCoexInd->coexIndType == SIR_COEX_IND_TYPE_ENABLE_AGGREGATION_IN_2p4)
      {
@@ -2046,11 +2022,6 @@ eHalStatus btcHandleCoexInd(tHalHandle hHal, void* pMsg)
              smsLog(pMac, LOGW,
              "Coex indication in %s(), type - SIR_COEX_IND_TYPE_ENABLE_AGGREGATION_IN_2p4",
                  __func__);
-         }
-         if (pMac->roam.configParam.agg_btc_sco_enabled) {
-             ccmCfgSetInt(pMac, WNI_CFG_NUM_BUFF_ADVERT,
-                          pMac->roam.configParam.num_ba_buff,
-                          NULL, eANI_BOOLEAN_FALSE);
          }
      }
      else if (pSmeCoexInd->coexIndType == SIR_COEX_IND_TYPE_DISABLE_UAPSD)
@@ -2081,20 +2052,6 @@ eHalStatus btcHandleCoexInd(tHalHandle hHal, void* pMsg)
          smsLog(pMac, LOG1, FL("ENABLE UAPSD BT Event received"));
          vos_timer_start(&pMac->btc.enableUapsdTimer,
                          (pMac->fBtcEnableIndTimerVal * 1000));
-     }
-     else if (pSmeCoexInd->coexIndType ==
-             SIR_COEX_IND_TYPE_HID_CONNECTED_WLAN_CONNECTED_IN_2p4)
-     {
-         smsLog(pMac, LOG1,
-                FL("SIR_COEX_IND_TYPE_HID_CONNECTED_WLAN_CONNECTED_IN_2p4"));
-         vos_set_snoc_high_freq_voting(true);
-     }
-     else if (pSmeCoexInd->coexIndType ==
-             SIR_COEX_IND_TYPE_HID_DISCONNECTED_WLAN_CONNECTED_IN_2p4)
-     {
-         smsLog(pMac, LOG1,
-                FL("SIR_COEX_IND_TYPE_HID_DISCONNECTED_WLAN_CONNECTED_IN_2p4"));
-         vos_set_snoc_high_freq_voting(false);
      }
      else // unknown indication type
      {

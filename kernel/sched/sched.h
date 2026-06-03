@@ -380,9 +380,6 @@ struct root_domain {
 	cpumask_var_t span;
 	cpumask_var_t online;
 
-	/* Indicate more than one runnable task for any CPU */
-	bool overload;
-
 	/*
 	 * The "RT overload" flag: it gets set if a CPU has more than
 	 * one runnable RT task.
@@ -500,10 +497,12 @@ struct rq {
 	int capacity;
 	int max_possible_capacity;
 	u64 window_start;
+	u32 mostly_idle_load;
+	int mostly_idle_nr_run;
+	int mostly_idle_freq;
 
 #ifdef CONFIG_SCHED_FREQ_INPUT
 	unsigned int old_busy_time;
-	int notifier_sent;
 #endif
 #endif
 
@@ -716,9 +715,6 @@ extern unsigned int min_possible_efficiency;
 extern unsigned int max_capacity;
 extern unsigned int min_capacity;
 extern unsigned int max_load_scale_factor;
-extern unsigned int max_possible_capacity;
-extern unsigned int min_max_possible_capacity;
-extern unsigned int min_max_capacity_delta_pct;
 extern unsigned long capacity_scale_cpu_efficiency(int cpu);
 extern unsigned long capacity_scale_cpu_freq(int cpu);
 extern unsigned int sched_mostly_idle_load;
@@ -728,29 +724,13 @@ extern unsigned int sched_downmigrate;
 extern unsigned int sched_init_task_load_pelt;
 extern unsigned int sched_init_task_load_windows;
 extern unsigned int sched_heavy_task;
+extern unsigned int sched_orig_load_balance_enable;
 
 extern void fixup_nr_big_small_task(int cpu);
+u64 scale_load_to_cpu(u64 load, int cpu);
 unsigned int max_task_load(void);
 extern void sched_account_irqtime(int cpu, struct task_struct *curr,
 				 u64 delta, u64 wallclock);
-extern unsigned int nr_eligible_big_tasks(int cpu);
-
-/*
- * 'load' is in reference to "best cpu" at its best frequency.
- * Scale that in reference to a given cpu, accounting for how bad it is
- * in reference to "best cpu".
- */
-static inline u64 scale_load_to_cpu(u64 task_load, int cpu)
-{
-	struct rq *rq = cpu_rq(cpu);
-
-	if (rq->load_scale_factor != 1024) {
-		task_load *= (u64)rq->load_scale_factor;
-		task_load /= 1024;
-	}
-
-	return task_load;
-}
 
 static inline void
 inc_cumulative_runnable_avg(struct rq *rq, struct task_struct *p)
@@ -772,6 +752,12 @@ dec_cumulative_runnable_avg(struct rq *rq, struct task_struct *p)
 		rq->cumulative_runnable_avg -= p->ravg.demand;
 	BUG_ON((s64)rq->cumulative_runnable_avg < 0);
 }
+
+#define pct_to_real(tunable)	\
+		(div64_u64((u64)tunable * (u64)max_task_load(), 100))
+
+#define real_to_pct(tunable)	\
+		(div64_u64((u64)tunable * (u64)100, (u64)max_task_load()))
 
 #else	/* CONFIG_SCHED_HMP */
 
@@ -800,11 +786,6 @@ static inline unsigned long capacity_scale_cpu_freq(int cpu)
 static inline void sched_account_irqtime(int cpu, struct task_struct *curr,
 				 u64 delta, u64 wallclock)
 {
-}
-
-static inline unsigned int nr_eligible_big_tasks(int cpu)
-{
-	return 0;
 }
 
 #endif	/* CONFIG_SCHED_HMP */
@@ -1147,7 +1128,6 @@ static inline void finish_lock_switch(struct rq *rq, struct task_struct *prev)
 #define WF_SYNC		0x01		/* waker goes to sleep after wakeup */
 #define WF_FORK		0x02		/* child wakeup after fork */
 #define WF_MIGRATED	0x4		/* internal use, task got migrated */
-#define WF_NO_NOTIFIER	0x08		/* do not notify governor */
 
 static inline void update_load_add(struct load_weight *lw, unsigned long inc)
 {
@@ -1227,10 +1207,8 @@ static const u32 prio_to_wmult[40] = {
 #else
 #define ENQUEUE_WAKING		0
 #endif
-#define ENQUEUE_MIGRATING	8
 
 #define DEQUEUE_SLEEP		1
-#define DEQUEUE_MIGRATING	2
 
 struct sched_class {
 	const struct sched_class *next;
@@ -1343,28 +1321,23 @@ static inline u64 steal_ticks(u64 steal)
 
 static inline void inc_nr_running(struct rq *rq)
 {
-	sched_update_nr_prod(cpu_of(rq), 1, true);
+	sched_update_nr_prod(cpu_of(rq), rq->nr_running, true);
 	rq->nr_running++;
 
-	if (rq->nr_running == 2) {
-#ifdef CONFIG_SMP
-		if (!rq->rd->overload)
-			rq->rd->overload = true;
-#endif
-
 #ifdef CONFIG_NO_HZ_FULL
+	if (rq->nr_running == 2) {
 		if (tick_nohz_full_cpu(rq->cpu)) {
 			/* Order rq->nr_running write against the IPI */
 			smp_wmb();
 			smp_send_reschedule(rq->cpu);
 		}
+       }
 #endif
-	}
 }
 
 static inline void dec_nr_running(struct rq *rq)
 {
-	sched_update_nr_prod(cpu_of(rq), 1, false);
+	sched_update_nr_prod(cpu_of(rq), rq->nr_running, false);
 	rq->nr_running--;
 }
 
@@ -1656,16 +1629,3 @@ static inline u64 irq_time_read(int cpu)
 }
 #endif /* CONFIG_64BIT */
 #endif /* CONFIG_IRQ_TIME_ACCOUNTING */
-
-static inline void account_reset_rq(struct rq *rq)
-{
-#ifdef CONFIG_IRQ_TIME_ACCOUNTING
-	rq->prev_irq_time = 0;
-#endif
-#ifdef CONFIG_PARAVIRT
-	rq->prev_steal_time = 0;
-#endif
-#ifdef CONFIG_PARAVIRT_TIME_ACCOUNTING
-	rq->prev_steal_time_rq = 0;
-#endif
-}

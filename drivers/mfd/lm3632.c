@@ -28,12 +28,6 @@
 	.of_compatible = "ti,lm3632-backlight",	\
 }
 
-#define LM3632_DEV_BL_SKY				\
-{						\
-	.name = "lm3632-backlight-sky",		\
-	.of_compatible = "ti,lm3632-backlight-sky",	\
-}
-
 #define LM3632_DEV_FLASH				\
 {						\
 	.name = "lm3632-flash",		\
@@ -43,8 +37,6 @@
 static struct mfd_cell lm3632_devs[] = {
 	/* Backlight */
 	LM3632_DEV_BL,
-	/* Backlight for SKY panel */
-	LM3632_DEV_BL_SKY,
 	/* Torch Flash */
 	LM3632_DEV_FLASH,
 };

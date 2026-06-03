@@ -28,9 +28,6 @@
 #include <linux/semaphore.h>
 #include <linux/reboot.h>
 
-#define SCM_SVC_SEC_WDOG_TRIG	0x8
-#define SCM_SVC_SPIN_CPU	0xD
-
 extern void *restart_reason;
 // Enable CONFIG_RESTART_REASON_DDR to use DDR address for saving restart reason
 #ifdef CONFIG_RESTART_REASON_DDR
@@ -268,6 +265,20 @@ struct secmsg_log {
 #define secdbg_msg(fmt, ...)
 #endif
 
+//KNOX_SEANDROID_START
+#ifdef CONFIG_SEC_DEBUG_AVC_LOG
+extern asmlinkage int sec_debug_avc_log(const char *fmt, ...);
+#define AVC_LOG_MAX 256
+struct secavc_log {
+	char msg[256];
+};
+#define secdbg_avc(fmt, ...) \
+	sec_debug_avc_log(fmt, ##__VA_ARGS__)
+#else
+#define secdbg_avc(fmt, ...)
+#endif
+//KNOX_SEANDROID_END
+
 #ifdef CONFIG_SEC_DEBUG_DCVS_LOG
 #define DCVS_LOG_MAX 256
 
@@ -346,7 +357,7 @@ extern void sec_debug_subsys_fill_fbinfo(int idx, void *fb, u32 xres,
   * low word : minor version
   * minor version changes should not affect LK behavior
   */
-#define SEC_DEBUG_SUBSYS_MAGIC3 0x00010006
+#define SEC_DEBUG_SUBSYS_MAGIC3 0x00010005
 
 
 #define TZBSP_CPU_COUNT           4
@@ -507,7 +518,6 @@ struct sec_debug_subsys_logger_log_info {
 	struct __log_data radio;
 };
 struct sec_debug_subsys_data {
-	unsigned int magic;
 	char name[16];
 	char state[16];
 	struct sec_debug_subsys_log log;
@@ -516,7 +526,6 @@ struct sec_debug_subsys_data {
 };
 
 struct sec_debug_subsys_data_modem {
-	unsigned int magic;
 	char name[16];
 	char state[16];
 	struct sec_debug_subsys_log log;
@@ -532,7 +541,6 @@ struct sec_debug_subsys_avc_log {
 };
 
 struct sec_debug_subsys_data_krait {
-	unsigned int magic;
 	char name[16];
 	char state[16];
 	char mdmerr_info[128];

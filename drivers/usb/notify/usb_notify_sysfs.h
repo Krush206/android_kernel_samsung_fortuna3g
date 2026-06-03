@@ -9,16 +9,12 @@
 #ifndef __LINUX_USB_NOTIFY_SYSFS_H__
 #define __LINUX_USB_NOTIFY_SYSFS_H__
 
-#define MAX_DISABLE_STR_LEN 32
-
 struct usb_notify_dev {
 	const char *name;
 	struct device *dev;
-	struct otg_notify *o_notify;
 	int index;
-	unsigned long disable_state;
-	char disable_state_cmd[MAX_DISABLE_STR_LEN];
-	int (*set_disable)(struct usb_notify_dev *, int);
+	int disable_state;
+	int (*set_disable)(bool);
 };
 
 extern int usb_notify_dev_register(struct usb_notify_dev *ndev);
@@ -26,3 +22,5 @@ extern void usb_notify_dev_unregister(struct usb_notify_dev *ndev);
 extern int usb_notify_class_init(void);
 extern void usb_notify_class_exit(void);
 #endif
+
+

@@ -66,7 +66,8 @@
 #include <linux/pid_namespace.h>
 
 #include "audit.h"
-#ifdef CONFIG_PROC_AVC
+
+#ifdef CONFIG_PROC_AVC 
 #include <linux/proc_avc.h>
 #endif
 
@@ -86,7 +87,7 @@ int		audit_ever_enabled;
 EXPORT_SYMBOL_GPL(audit_enabled);
 
 /* Default state when kernel boots without any parameters. */
-static int	audit_default;
+static int	audit_default = 1;
 
 /* If auditing cannot proceed, audit_failure selects what happens. */
 static int	audit_failure = AUDIT_FAIL_PRINTK;
@@ -402,22 +403,18 @@ static void kauditd_send_skb(struct sk_buff *skb)
 		audit_pid = 0;
 		/* we might get lucky and get this in the next auditd */
 		audit_hold_skb(skb);
+	} else{
 #ifdef CONFIG_PROC_AVC
-	} else {
 		struct nlmsghdr *nlh = nlmsg_hdr(skb);
 		char *data = nlmsg_data(nlh);
 	
 		if (nlh->nlmsg_type != AUDIT_EOE && nlh->nlmsg_type != AUDIT_NETFILTER_CFG) {
 			sec_avc_log("%s\n", data);
 		}
-#else
-	} else
 #endif
 		/* drop the extra reference if sent ok */
 		consume_skb(skb);
-#ifdef CONFIG_PROC_AVC
-}
-#endif
+	}
 }
 
 /*
@@ -949,8 +946,6 @@ static int __init audit_enable(char *str)
 	audit_default = !!simple_strtol(str, NULL, 0);
 	if (!audit_default)
 		audit_initialized = AUDIT_DISABLED;
-        else
-		audit_initialized = AUDIT_UNINITIALIZED;
 
 	printk(KERN_INFO "audit: %s", audit_default ? "enabled" : "disabled");
 
@@ -1435,7 +1430,7 @@ void audit_log_cap(struct audit_buffer *ab, char *prefix, kernel_cap_t *cap)
 	audit_log_format(ab, " %s=", prefix);
 	CAP_FOR_EACH_U32(i) {
 		audit_log_format(ab, "%08x",
-				 cap->cap[CAP_LAST_U32 - i]);
+				 cap->cap[(_KERNEL_CAPABILITY_U32S-1) - i]);
 	}
 }
 
@@ -1636,10 +1631,11 @@ void audit_log_task_info(struct audit_buffer *ab, struct task_struct *tsk)
 	spin_unlock_irq(&tsk->sighand->siglock);
 
 	audit_log_format(ab,
-			 " ppid=%ld pid=%d auid=%u uid=%u gid=%u"
+			 " ppid=%ld ppcomm=%s pid=%d auid=%u uid=%u gid=%u"
 			 " euid=%u suid=%u fsuid=%u"
 			 " egid=%u sgid=%u fsgid=%u ses=%u tty=%s",
 			 sys_getppid(),
+			 tsk->parent->comm,
 			 tsk->pid,
 			 from_kuid(&init_user_ns, audit_get_loginuid(tsk)),
 			 from_kuid(&init_user_ns, cred->uid),

@@ -161,7 +161,11 @@ static void fc8080_power_off(void)
 	}
 }
 
-static bool fc8080_power_on(struct tdmb_dt_platform_data *pdata)
+#ifdef CONFIG_TDMB_XTAL_FREQ
+static bool fc8080_power_on(int param)
+#else
+static bool fc8080_power_on(void)
+#endif
 {
 	DPRINTK("%s\n", __func__);
 
@@ -171,7 +175,7 @@ static bool fc8080_power_on(struct tdmb_dt_platform_data *pdata)
 		tdmb_control_gpio(true);
 		if (dmb_drv_init(tdmb_get_if_handle()
 #ifdef CONFIG_TDMB_XTAL_FREQ
-		,pdata
+		,param
 #endif
 		) == TDMB_FAIL) {
 			tdmb_control_gpio(false);

@@ -403,9 +403,6 @@ int ts_power_enable(struct ist30xx_data *data, int en)
 			return -EINVAL;
 		}
 		if(data->dt_data->tsp_vdd_name) {
-			rc = regulator_set_voltage(data->dt_data->tsp_power, 3000000, 3000000);
-			if (rc)
-				tsp_err("%s: %s set_level failed (%d)\n", __func__, data->dt_data->tsp_vdd_name, rc);
 			rc = regulator_enable(data->dt_data->tsp_power);
 			if (rc) {
 				tsp_err("%s: %s enable failed (%d)\n", __func__, data->dt_data->tsp_vdd_name, rc);

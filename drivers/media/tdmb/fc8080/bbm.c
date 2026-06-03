@@ -48,19 +48,11 @@ s32 bbm_com_probe(HANDLE handle)
 	return res;
 }
 
-s32 bbm_com_init(HANDLE handle
-#ifdef CONFIG_TDMB_XTAL_FREQ
-		, u8 xtal_load_cap
-#endif
-)
+s32 bbm_com_init(HANDLE handle)
 {
 	s32 res;
 
-	res = fc8080_init(handle
-#ifdef CONFIG_TDMB_XTAL_FREQ
-		, xtal_load_cap
-#endif
-	);
+	res = fc8080_init(handle);
 
 	return res;
 }

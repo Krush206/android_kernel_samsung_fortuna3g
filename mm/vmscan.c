@@ -44,6 +44,7 @@
 #include <linux/oom.h>
 #include <linux/prefetch.h>
 #include <linux/debugfs.h>
+#include <linux/fs.h>
 
 #include <asm/tlbflush.h>
 #include <asm/div64.h>
@@ -55,6 +56,15 @@
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/vmscan.h>
+
+#ifdef CONFIG_RUNTIME_COMPCACHE
+struct rtcc_control {
+	int nr_anon;
+	int nr_file;
+	int swappiness;
+	int nr_swapped;
+};
+#endif /* CONFIG_RUNTIME_COMPCACHE */
 
 struct scan_control {
 	/* Incremented by the number of inactive pages that were scanned */
@@ -81,6 +91,8 @@ struct scan_control {
 
 	int order;
 
+	int swappiness;
+
 	/* Scan (total_size >> priority) pages at once */
 	int priority;
 
@@ -96,12 +108,9 @@ struct scan_control {
 	 */
 	nodemask_t	*nodemask;
 
-	/*
-	 * Reclaim pages from a vma. If the page is shared by other tasks
-	 * it is zapped from a vma without reclaim so it ends up remaining
-	 * on memory until last task zap it.
-	 */
-	struct vm_area_struct *target_vma;
+#ifdef CONFIG_RUNTIME_COMPCACHE
+	struct rtcc_control *rc;
+#endif /* CONFIG_RUNTIME_COMPCACHE */
 };
 
 #define lru_to_page(_head) (list_entry((_head)->prev, struct page, lru))
@@ -140,6 +149,17 @@ struct scan_control {
 int vm_swappiness = 60;
 unsigned long vm_total_pages;	/* The total number of pages which the VM controls */
 
+#ifdef CONFIG_RUNTIME_COMPCACHE
+extern int get_rtcc_status(void);
+atomic_t kswapd_running = ATOMIC_INIT(1);
+long nr_kswapd_swapped = 0;
+
+static bool rtcc_reclaim(struct scan_control *sc)
+{
+	return (sc->rc != NULL);
+}
+#endif /* CONFIG_RUNTIME_COMPCACHE */
+
 static LIST_HEAD(shrinker_list);
 static DECLARE_RWSEM(shrinker_rwsem);
 
@@ -162,9 +182,11 @@ static unsigned long zone_reclaimable_pages(struct zone *zone)
 	nr = zone_page_state(zone, NR_ACTIVE_FILE) +
 	     zone_page_state(zone, NR_INACTIVE_FILE);
 
-	if (get_nr_swap_pages() > 0 && total_swap_pages >= totalram_pages)
+#ifndef CONFIG_KSWAPD_NOSWAP
+	if (get_nr_swap_pages() > 0)
 		nr += zone_page_state(zone, NR_ACTIVE_ANON) +
 		      zone_page_state(zone, NR_INACTIVE_ANON);
+#endif /* CONFIG_KSWAPD_NOSWAP */
 
 	return nr;
 }
@@ -293,7 +315,7 @@ unsigned long shrink_slab(struct shrink_control *shrink,
 
 	list_for_each_entry(shrinker, &shrinker_list, list) {
 		unsigned long long delta;
-		long total_scan;
+		long total_scan, pages_got;
 		long max_pass;
 		int shrink_ret = 0;
 		long nr;
@@ -366,10 +388,14 @@ unsigned long shrink_slab(struct shrink_control *shrink,
 							batch_size);
 			if (shrink_ret == -1)
 				break;
-			if (shrink_ret < nr_before)
-				ret += nr_before - shrink_ret;
+			if (shrink_ret < nr_before) {
+				pages_got = nr_before - shrink_ret;
+				ret += pages_got;
+				total_scan -= pages_got > batch_size ? pages_got : batch_size;
+			} else {
+				total_scan -= batch_size;
+			}
 			count_vm_events(SLABS_SCANNED, batch_size);
-			total_scan -= batch_size;
 
 			cond_resched();
 		}
@@ -806,7 +832,7 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 		struct address_space *mapping;
 		struct page *page;
 		int may_enter_fs;
-		enum page_references references = PAGEREF_RECLAIM;
+		enum page_references references = PAGEREF_RECLAIM_CLEAN;
 		bool dirty, writeback;
 
 		cond_resched();
@@ -818,8 +844,7 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 			goto keep;
 
 		VM_BUG_ON(PageActive(page));
-		if (zone)
-			VM_BUG_ON(page_zone(page) != zone);
+		VM_BUG_ON(page_zone(page) != zone);
 
 		sc->nr_scanned++;
 
@@ -856,8 +881,7 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 		 * end of the LRU a second time.
 		 */
 		mapping = page_mapping(page);
-		if (((dirty || writeback) && mapping &&
-		     bdi_write_congested(mapping->backing_dev_info)) ||
+		if ((mapping && bdi_write_congested(mapping->backing_dev_info)) ||
 		    (writeback && PageReclaim(page)))
 			nr_congested++;
 
@@ -906,21 +930,9 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 				nr_immediate++;
 				goto keep_locked;
 
-                        /*
-                         * memcg doesn't have any dirty pages throttling so we
-                         * could easily OOM just because too many pages are in
-                         * writeback and there is nothing else to reclaim.
-                         *
-                         * Require may_enter_fs to wait on writeback, because
-                         * fs may not have submitted IO yet. And a loop driver
-                         * thread might enter reclaim, and deadlock if it waits
-                         * on a page for which it is needed to do the write
-                         * (loop masks off __GFP_IO|__GFP_FS for this reason);
-                         * but more thought would probably show more reasons.
-                         */
-
+			/* Case 2 above */
 			} else if (global_reclaim(sc) ||
-			    !PageReclaim(page) || !may_enter_fs) {
+			    !PageReclaim(page) || !(sc->gfp_mask & __GFP_IO)) {
 				/*
 				 * This is slightly racy - end_page_writeback()
 				 * might have just cleared PageReclaim, then
@@ -976,8 +988,7 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 		 * processes. Try to unmap it here.
 		 */
 		if (page_mapped(page) && mapping) {
-			switch (try_to_unmap(page,
-					ttu_flags, sc->target_vma)) {
+			switch (try_to_unmap(page, ttu_flags)) {
 			case SWAP_FAIL:
 				goto activate_locked;
 			case SWAP_AGAIN:
@@ -997,7 +1008,7 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 			 */
 			if (page_is_file_cache(page) &&
 					(!current_is_kswapd() ||
-				(zone && !zone_is_reclaim_dirty(zone)))) {
+					 !zone_is_reclaim_dirty(zone))) {
 				/*
 				 * Immediately reclaim when written back.
 				 * Similar in principal to deactivate_page()
@@ -1104,25 +1115,18 @@ free_it:
 		 * appear not as the counts should be low
 		 */
 		list_add(&page->lru, &free_pages);
-		/*
-		 * If pagelist are from multiple zones, we should decrease
-		 * NR_ISOLATED_ANON + x on freed pages in here.
-		 */
-		if (!zone)
-			dec_zone_page_state(page, NR_ISOLATED_ANON +
-					page_is_file_cache(page));
 		continue;
 
 cull_mlocked:
 		if (PageSwapCache(page))
 			try_to_free_swap(page);
 		unlock_page(page);
-		list_add(&page->lru, &ret_pages);
+		putback_lru_page(page);
 		continue;
 
 activate_locked:
 		/* Not a candidate for swapping, so reclaim swap space. */
-		if (PageSwapCache(page) && vm_swap_full(page_swap_info(page)))
+		if (PageSwapCache(page) && vm_swap_full())
 			try_to_free_swap(page);
 		VM_BUG_ON(PageActive(page));
 		SetPageActive(page);
@@ -1154,8 +1158,6 @@ unsigned long reclaim_clean_pages_from_list(struct zone *zone,
 		.gfp_mask = GFP_KERNEL,
 		.priority = DEF_PRIORITY,
 		.may_unmap = 1,
-		/* Doesn't allow to write out dirty page */
-		.may_writepage = 0,
 	};
 	unsigned long ret, dummy1, dummy2, dummy3, dummy4, dummy5;
 	struct page *page, *next;
@@ -1173,45 +1175,9 @@ unsigned long reclaim_clean_pages_from_list(struct zone *zone,
 			TTU_UNMAP|TTU_IGNORE_ACCESS,
 			&dummy1, &dummy2, &dummy3, &dummy4, &dummy5, true);
 	list_splice(&clean_pages, page_list);
-	mod_zone_page_state(zone, NR_ISOLATED_FILE, -ret);
+	__mod_zone_page_state(zone, NR_ISOLATED_FILE, -ret);
 	return ret;
 }
-
-#ifdef CONFIG_PROCESS_RECLAIM
-unsigned long reclaim_pages_from_list(struct list_head *page_list,
-					struct vm_area_struct *vma)
-{
-	struct scan_control sc = {
-		.gfp_mask = GFP_KERNEL,
-		.priority = DEF_PRIORITY,
-		.may_writepage = 1,
-		.may_unmap = 1,
-		.may_swap = 1,
-		.target_vma = vma,
-	};
-
-	unsigned long nr_reclaimed;
-	struct page *page;
-	unsigned long dummy1, dummy2, dummy3, dummy4, dummy5;
-
-	list_for_each_entry(page, page_list, lru)
-		ClearPageActive(page);
-
-	nr_reclaimed = shrink_page_list(page_list, NULL, &sc,
-			TTU_UNMAP|TTU_IGNORE_ACCESS,
-			&dummy1, &dummy2, &dummy3, &dummy4, &dummy5, true);
-
-	while (!list_empty(page_list)) {
-		page = lru_to_page(page_list);
-		list_del(&page->lru);
-		dec_zone_page_state(page, NR_ISOLATED_ANON +
-				page_is_file_cache(page));
-		putback_lru_page(page);
-	}
-
-	return nr_reclaimed;
-}
-#endif
 
 /*
  * Attempt to remove the specified page from its LRU.  Only take this page
@@ -1402,6 +1368,17 @@ static int __too_many_isolated(struct zone *zone, int file,
 	struct scan_control *sc, int safe)
 {
 	unsigned long inactive, isolated;
+
+#ifdef CONFIG_RUNTIME_COMPCACHE
+	if (get_rtcc_status() == 1)
+		return 0;
+#endif /* CONFIG_RUNTIME_COMPCACHE */
+
+	if (current_is_kswapd())
+		return 0;
+
+	if (!global_reclaim(sc))
+		return 0;
 
 	if (file) {
 		if (safe) {
@@ -1658,6 +1635,15 @@ shrink_inactive_list(unsigned long nr_to_scan, struct lruvec *lruvec,
 	if (!sc->hibernation_mode && !current_is_kswapd())
 		wait_iff_congested(zone, BLK_RW_ASYNC, HZ/10);
 
+#ifdef CONFIG_RUNTIME_COMPCACHE
+	if (!file) {
+		if (rtcc_reclaim(sc))
+			sc->rc->nr_swapped += nr_reclaimed;
+		else
+			nr_kswapd_swapped += nr_reclaimed;
+	}
+#endif /* CONFIG_RUNTIME_COMPCACHE */
+
 	trace_mm_vmscan_lru_shrink_inactive(zone->zone_pgdat->node_id,
 		zone_idx(zone),
 		nr_scanned, nr_reclaimed,
@@ -1912,8 +1898,12 @@ static unsigned long shrink_list(enum lru_list lru, unsigned long nr_to_scan,
 
 static int vmscan_swappiness(struct scan_control *sc)
 {
+#ifdef CONFIG_RUNTIME_COMPCACHE
+	if (rtcc_reclaim(sc))
+		return sc->rc->swappiness;
+#endif /* CONFIG_RUNTIME_COMPCACHE */
 	if (global_reclaim(sc))
-		return vm_swappiness;
+		return sc->swappiness;
 	return mem_cgroup_swappiness(sc->target_mem_cgroup);
 }
 
@@ -1942,7 +1932,7 @@ static void get_scan_count(struct lruvec *lruvec, struct scan_control *sc,
 	struct zone *zone = lruvec_zone(lruvec);
 	unsigned long anon_prio, file_prio;
 	enum scan_balance scan_balance;
-	unsigned long anon, file;
+	unsigned long anon, file, free;
 	bool force_scan = false;
 	unsigned long ap, fp;
 	enum lru_list lru;
@@ -1990,6 +1980,11 @@ static void get_scan_count(struct lruvec *lruvec, struct scan_control *sc,
 		goto out;
 	}
 
+	anon  = get_lru_size(lruvec, LRU_ACTIVE_ANON) +
+		get_lru_size(lruvec, LRU_INACTIVE_ANON);
+	file  = get_lru_size(lruvec, LRU_ACTIVE_FILE) +
+		get_lru_size(lruvec, LRU_INACTIVE_FILE);
+
 	/*
 	 * If it's foreseeable that reclaiming the file cache won't be
 	 * enough to get the zone back into a desirable shape, we have
@@ -1997,14 +1992,8 @@ static void get_scan_count(struct lruvec *lruvec, struct scan_control *sc,
 	 * thrashing - remaining file pages alone.
 	 */
 	if (global_reclaim(sc)) {
-		unsigned long zonefile;
-		unsigned long zonefree;
-
-		zonefree = zone_page_state(zone, NR_FREE_PAGES);
-		zonefile = zone_page_state(zone, NR_ACTIVE_FILE) +
-			   zone_page_state(zone, NR_INACTIVE_FILE);
-
-		if (unlikely(zonefile + zonefree <= high_wmark_pages(zone))) {
+		free = zone_page_state(zone, NR_FREE_PAGES);
+		if (unlikely(file + free <= high_wmark_pages(zone))) {
 			scan_balance = SCAN_ANON;
 			goto out;
 		}
@@ -2040,12 +2029,6 @@ static void get_scan_count(struct lruvec *lruvec, struct scan_control *sc,
 	 *
 	 * anon in [0], file in [1]
 	 */
-
-	anon  = get_lru_size(lruvec, LRU_ACTIVE_ANON) +
-		get_lru_size(lruvec, LRU_INACTIVE_ANON);
-	file  = get_lru_size(lruvec, LRU_ACTIVE_FILE) +
-		get_lru_size(lruvec, LRU_INACTIVE_FILE);
-
 	spin_lock_irq(&zone->lru_lock);
 	if (unlikely(reclaim_stat->recent_scanned[0] > anon / 4)) {
 		reclaim_stat->recent_scanned[0] /= 2;
@@ -2123,7 +2106,16 @@ static void shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
 	struct blk_plug plug;
 	bool scan_adjusted;
 
+#ifdef CONFIG_RUNTIME_COMPCACHE
+	struct rtcc_control *rc = sc->rc;
+#endif /* CONFIG_RUNTIME_COMPCACHE */
+
 	get_scan_count(lruvec, sc, nr);
+
+#ifdef CONFIG_RUNTIME_COMPCACHE
+	if (rtcc_reclaim(sc))
+		nr[LRU_INACTIVE_FILE] = nr[LRU_ACTIVE_FILE] = 0;
+#endif /* CONFIG_RUNTIME_COMPCACHE */
 
 	/* Record the original scan target for proportional adjustments later */
 	memcpy(targets, nr, sizeof(nr));
@@ -2148,6 +2140,13 @@ static void shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
 		unsigned long nr_anon, nr_file, percentage;
 		unsigned long nr_scanned;
 
+#ifdef CONFIG_RUNTIME_COMPCACHE
+		if (rtcc_reclaim(sc)) {
+			if (rc->nr_swapped >= rc->nr_anon)
+				nr[LRU_INACTIVE_ANON] = nr[LRU_ACTIVE_ANON] = 0;
+		}
+#endif /* CONFIG_RUNTIME_COMPCACHE */
+
 		for_each_evictable_lru(lru) {
 			if (nr[lru]) {
 				nr_to_scan = min(nr[lru], SWAP_CLUSTER_MAX);
@@ -2157,8 +2156,6 @@ static void shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
 							    lruvec, sc);
 			}
 		}
-
-		cond_resched();
 
 		if (nr_reclaimed < nr_to_reclaim || scan_adjusted)
 			continue;
@@ -2368,8 +2365,9 @@ static inline bool compaction_ready(struct zone *zone, struct scan_control *sc)
 	 * there is a buffer of free pages available to give compaction
 	 * a reasonable chance of completing and allocating the page
 	 */
-	balance_gap = min(low_wmark_pages(zone), DIV_ROUND_UP(
-			zone->managed_pages, KSWAPD_ZONE_BALANCE_GAP_RATIO));
+	balance_gap = min(low_wmark_pages(zone),
+		(zone->managed_pages + KSWAPD_ZONE_BALANCE_GAP_RATIO-1) /
+			KSWAPD_ZONE_BALANCE_GAP_RATIO);
 	watermark = high_wmark_pages(zone) + balance_gap + (2UL << sc->order);
 	watermark_ok = zone_watermark_ok_safe(zone, 0, watermark, 0, 0);
 
@@ -2548,6 +2546,7 @@ static unsigned long do_try_to_free_pages(struct zonelist *zonelist,
 				lru_pages += zone_reclaimable_pages(zone);
 			}
 
+			shrink->priority = sc->priority;
 			shrink_slab(shrink, sc->nr_scanned, lru_pages);
 			if (reclaim_state) {
 				sc->nr_reclaimed += reclaim_state->reclaimed_slab;
@@ -2740,7 +2739,16 @@ unsigned long try_to_free_pages(struct zonelist *zonelist, int order,
 		.may_writepage = !laptop_mode,
 		.nr_to_reclaim = SWAP_CLUSTER_MAX,
 		.may_unmap = 1,
+#if defined(CONFIG_DIRECT_RECLAIM_FILE_PAGES_ONLY) || defined(CONFIG_RUNTIME_COMPCACHE)
+		.may_swap = 0,
+#else
 		.may_swap = 1,
+#endif /* CONFIG_RUNTIME_COMPCACHE */
+#ifdef CONFIG_ZSWAP
+		.swappiness = vm_swappiness / 2,
+#else
+		.swappiness = vm_swappiness,
+#endif
 		.order = order,
 		.priority = DEF_PRIORITY,
 		.target_mem_cgroup = NULL,
@@ -2783,6 +2791,7 @@ unsigned long mem_cgroup_shrink_node_zone(struct mem_cgroup *memcg,
 		.may_unmap = 1,
 		.may_swap = !noswap,
 		.order = 0,
+		.swappiness = vm_swappiness,
 		.priority = 0,
 		.target_mem_cgroup = memcg,
 	};
@@ -2823,6 +2832,7 @@ unsigned long try_to_free_mem_cgroup_pages(struct mem_cgroup *memcg,
 		.may_swap = !noswap,
 		.nr_to_reclaim = SWAP_CLUSTER_MAX,
 		.order = 0,
+		.swappiness = vm_swappiness,
 		.priority = DEF_PRIORITY,
 		.target_mem_cgroup = memcg,
 		.nodemask = NULL, /* we don't care the placement */
@@ -2941,7 +2951,11 @@ static bool pgdat_balanced(pg_data_t *pgdat, int order, int classzone_idx)
 	}
 
 	if (order)
+#ifdef CONFIG_TIGHT_PGDAT_BALANCE
+		return balanced_pages >= (managed_pages >> 1);
+#else
 		return balanced_pages >= (managed_pages >> 2);
+#endif
 	else
 		return true;
 }
@@ -2960,20 +2974,18 @@ static bool prepare_kswapd_sleep(pg_data_t *pgdat, int order, long remaining,
 		return false;
 
 	/*
-	 * The throttled processes are normally woken up in balance_pgdat() as
-	 * soon as pfmemalloc_watermark_ok() is true. But there is a potential
-	 * race between when kswapd checks the watermarks and a process gets
-	 * throttled. There is also a potential race if processes get
-	 * throttled, kswapd wakes, a large process exits thereby balancing the
-	 * zones, which causes kswapd to exit balance_pgdat() before reaching
-	 * the wake up checks. If kswapd is going to sleep, no process should
-	 * be sleeping on pfmemalloc_wait, so wake them now if necessary. If
-	 * the wake up is premature, processes will wake kswapd and get
-	 * throttled again. The difference from wake ups in balance_pgdat() is
-	 * that here we are under prepare_to_wait().
+	 * There is a potential race between when kswapd checks its watermarks
+	 * and a process gets throttled. There is also a potential race if
+	 * processes get throttled, kswapd wakes, a large process exits therby
+	 * balancing the zones that causes kswapd to miss a wakeup. If kswapd
+	 * is going to sleep, no process should be sleeping on pfmemalloc_wait
+	 * so wake them now if necessary. If necessary, processes will wake
+	 * kswapd and get throttled again
 	 */
-	if (waitqueue_active(&pgdat->pfmemalloc_wait))
-		wake_up_all(&pgdat->pfmemalloc_wait);
+	if (waitqueue_active(&pgdat->pfmemalloc_wait)) {
+		wake_up(&pgdat->pfmemalloc_wait);
+		return false;
+	}
 
 	return pgdat_balanced(pgdat, order, classzone_idx);
 }
@@ -3021,8 +3033,9 @@ static bool kswapd_shrink_zone(struct zone *zone,
 	 * high wmark plus a "gap" where the gap is either the low
 	 * watermark or 1% of the zone, whichever is smaller.
 	 */
-	balance_gap = min(low_wmark_pages(zone), DIV_ROUND_UP(
-			zone->managed_pages, KSWAPD_ZONE_BALANCE_GAP_RATIO));
+	balance_gap = min(low_wmark_pages(zone),
+		(zone->managed_pages + KSWAPD_ZONE_BALANCE_GAP_RATIO-1) /
+		KSWAPD_ZONE_BALANCE_GAP_RATIO);
 
 	/*
 	 * If there is no low memory pressure or the zone is balanced then no
@@ -3094,6 +3107,7 @@ static unsigned long balance_pgdat(pg_data_t *pgdat, int order,
 		.may_swap = 1,
 		.may_writepage = !laptop_mode,
 		.order = order,
+		.swappiness = vm_swappiness,
 		.target_mem_cgroup = NULL,
 	};
 	count_vm_event(PAGEOUTRUN);
@@ -3228,7 +3242,7 @@ static unsigned long balance_pgdat(pg_data_t *pgdat, int order,
 		 */
 		if (waitqueue_active(&pgdat->pfmemalloc_wait) &&
 				pfmemalloc_watermark_ok(pgdat))
-			wake_up_all(&pgdat->pfmemalloc_wait);
+			wake_up(&pgdat->pfmemalloc_wait);
 
 		/*
 		 * Fragmentation may mean that the system cannot be rebalanced
@@ -3294,6 +3308,11 @@ static void kswapd_try_to_sleep(pg_data_t *pgdat, int order, int classzone_idx)
 	 * go fully to sleep until explicitly woken up.
 	 */
 	if (prepare_kswapd_sleep(pgdat, order, remaining, classzone_idx)) {
+
+#ifdef CONFIG_RUNTIME_COMPCACHE
+		atomic_set(&kswapd_running, 0);
+#endif /* CONFIG_RUNTIME_COMPCACHE */
+
 		trace_mm_vmscan_kswapd_sleep(pgdat->node_id);
 
 		/*
@@ -3417,6 +3436,10 @@ static int kswapd(void *p)
 		if (kthread_should_stop())
 			break;
 
+#ifdef CONFIG_RUNTIME_COMPCACHE
+		atomic_set(&kswapd_running, 1);
+#endif /* CONFIG_RUNTIME_COMPCACHE */
+
 		/*
 		 * We can speed up thawing tasks if we don't call balance_pgdat
 		 * after returning from the refrigerator
@@ -3455,12 +3478,157 @@ void wakeup_kswapd(struct zone *zone, int order, enum zone_type classzone_idx)
 	}
 	if (!waitqueue_active(&pgdat->kswapd_wait))
 		return;
-	if (zone_balanced(zone, order, 0, 0))
+	if (zone_watermark_ok_safe(zone, order, low_wmark_pages(zone), 0, 0))
 		return;
 
 	trace_mm_vmscan_wakeup_kswapd(pgdat->node_id, zone_idx(zone), order);
 	wake_up_interruptible(&pgdat->kswapd_wait);
 }
+
+#ifdef CONFIG_RUNTIME_COMPCACHE
+/*
+ * This is the main entry point to direct page reclaim for RTCC.
+ *
+ * If a full scan of the inactive list fails to free enough memory then we
+ * are "out of memory" and something needs to be killed.
+ *
+ * If the caller is !__GFP_FS then the probability of a failure is reasonably
+ * high - the zone may be full of dirty or under-writeback pages, which this
+ * caller can't do much about.  We kick the writeback threads and take explicit
+ * naps in the hope that some of these pages can be written.  But if the
+ * allocating task holds filesystem locks which prevent writeout this might not
+ * work, and the allocation attempt will fail.
+ *
+ * returns:	0, if no pages reclaimed
+ * 		else, the number of pages reclaimed
+ */
+static unsigned long rtcc_do_try_to_free_pages(struct zonelist *zonelist,
+					struct scan_control *sc,
+					struct shrink_control *shrink)
+{
+	unsigned long total_scanned = 0;
+	unsigned long writeback_threshold;
+	bool aborted_reclaim;
+
+	delayacct_freepages_start();
+
+	if (global_reclaim(sc))
+		count_vm_event(ALLOCSTALL);
+
+	do {
+		vmpressure_prio(sc->gfp_mask, sc->target_mem_cgroup,
+				sc->priority);
+		sc->nr_scanned = 0;
+		aborted_reclaim = shrink_zones(zonelist, sc);
+
+		total_scanned += sc->nr_scanned;
+		if (sc->nr_reclaimed >= sc->nr_to_reclaim)
+			goto out;
+
+		/*
+		 * If we're getting trouble reclaiming, start doing
+		 * writepage even in laptop mode.
+		 */
+		if (sc->priority < DEF_PRIORITY - 2)
+			sc->may_writepage = 1;
+
+		/*
+		 * Try to write back as many pages as we just scanned.  This
+		 * tends to cause slow streaming writers to write data to the
+		 * disk smoothly, at the dirtying rate, which is nice.   But
+		 * that's undesirable in laptop mode, where we *want* lumpy
+		 * writeout.  So in laptop mode, write out the whole world.
+		 */
+		writeback_threshold = sc->nr_to_reclaim + sc->nr_to_reclaim / 2;
+		if (total_scanned > writeback_threshold) {
+			wakeup_flusher_threads(laptop_mode ? 0 : total_scanned,
+						WB_REASON_TRY_TO_FREE_PAGES);
+			sc->may_writepage = 1;
+		}
+
+		/* Take a nap, wait for some writeback to complete */
+		if (!sc->hibernation_mode && sc->nr_scanned &&
+		    sc->priority < DEF_PRIORITY - 2) {
+			struct zone *preferred_zone;
+
+			first_zones_zonelist(zonelist, gfp_zone(sc->gfp_mask),
+						&cpuset_current_mems_allowed,
+						&preferred_zone);
+			wait_iff_congested(preferred_zone, BLK_RW_ASYNC, HZ/10);
+		}
+	} while (--sc->priority >= 0);
+
+out:
+	delayacct_freepages_end();
+
+	if (sc->nr_reclaimed)
+		return sc->nr_reclaimed;
+
+	/*
+	 * As hibernation is going on, kswapd is freezed so that it can't mark
+	 * the zone into all_unreclaimable. Thus bypassing all_unreclaimable
+	 * check.
+	 */
+	if (oom_killer_disabled)
+		return 0;
+
+	/* Aborted reclaim to try compaction? don't OOM, then */
+	if (aborted_reclaim)
+		return 1;
+
+	/* top priority shrink_zones still had more to do? don't OOM, then */
+	if (global_reclaim(sc) && !all_unreclaimable(zonelist, sc))
+		return 1;
+
+	return 0;
+}
+
+unsigned long rtcc_reclaim_pages(unsigned long nr_to_reclaim, int swappiness, unsigned long *nr_swapped)
+{
+	struct reclaim_state reclaim_state;
+
+	struct scan_control sc = {
+		.gfp_mask = GFP_HIGHUSER_MOVABLE,
+		.may_swap = 1,
+		.may_unmap = 1,
+		.may_writepage = 1,
+		.nr_to_reclaim = nr_to_reclaim,
+		.target_mem_cgroup = NULL,
+		.order = 0,
+		.priority = DEF_PRIORITY/2,
+	};
+	struct shrink_control shrink = {
+		.gfp_mask = sc.gfp_mask,
+	};
+	struct zonelist *zonelist = node_zonelist(numa_node_id(), sc.gfp_mask);
+	struct task_struct *p = current;
+	unsigned long nr_reclaimed;
+	struct rtcc_control rc;
+
+	rc.swappiness = swappiness;
+	rc.nr_anon = nr_to_reclaim * swappiness / 200;
+	rc.nr_file = nr_to_reclaim - rc.nr_anon;
+	rc.nr_swapped = 0;
+	sc.rc = &rc;
+	
+	if (swappiness <= 1)
+		sc.may_swap = 0;
+
+	p->flags |= PF_MEMALLOC;
+	lockdep_set_current_reclaim_state(sc.gfp_mask);
+	reclaim_state.reclaimed_slab = 0;
+	p->reclaim_state = &reclaim_state;
+
+	nr_reclaimed = rtcc_do_try_to_free_pages(zonelist, &sc, &shrink);
+	*nr_swapped = rc.nr_swapped;
+
+	p->reclaim_state = NULL;
+	lockdep_clear_current_reclaim_state();
+	p->flags &= ~PF_MEMALLOC;
+
+	return nr_reclaimed;
+}
+#endif /* CONFIG_RUNTIME_COMPCACHE */
 
 #ifdef CONFIG_HIBERNATION
 /*
@@ -3482,6 +3650,7 @@ unsigned long shrink_all_memory(unsigned long nr_to_reclaim)
 		.nr_to_reclaim = nr_to_reclaim,
 		.hibernation_mode = 1,
 		.order = 0,
+		.swappiness = vm_swappiness,
 		.priority = DEF_PRIORITY,
 	};
 	struct shrink_control shrink = {
@@ -3667,10 +3836,15 @@ static int __zone_reclaim(struct zone *zone, gfp_t gfp_mask, unsigned int order)
 	struct scan_control sc = {
 		.may_writepage = !!(zone_reclaim_mode & RECLAIM_WRITE),
 		.may_unmap = !!(zone_reclaim_mode & RECLAIM_SWAP),
+#ifdef CONFIG_RUNTIME_COMPCACHE
+		.may_swap = 0,
+#else
 		.may_swap = 1,
+#endif /* CONFIG_RUNTIME_COMPCACHE */
 		.nr_to_reclaim = max(nr_pages, SWAP_CLUSTER_MAX),
 		.gfp_mask = (gfp_mask = memalloc_noio_flags(gfp_mask)),
 		.order = order,
+		.swappiness = vm_swappiness,
 		.priority = ZONE_RECLAIM_PRIORITY,
 	};
 	struct shrink_control shrink = {
@@ -3715,6 +3889,7 @@ static int __zone_reclaim(struct zone *zone, gfp_t gfp_mask, unsigned int order)
 			unsigned long lru_pages = zone_reclaimable_pages(zone);
 
 			/* No reclaimable slab or very low memory pressure */
+			shrink.priority = sc.priority;
 			if (!shrink_slab(&shrink, sc.nr_scanned, lru_pages))
 				break;
 
@@ -3861,3 +4036,66 @@ void check_move_unevictable_pages(struct page **pages, int nr_pages)
 	}
 }
 #endif /* CONFIG_SHMEM */
+
+static void warn_scan_unevictable_pages(void)
+{
+	printk_once(KERN_WARNING
+		    "%s: The scan_unevictable_pages sysctl/node-interface has been "
+		    "disabled for lack of a legitimate use case.  If you have "
+		    "one, please send an email to linux-mm@kvack.org.\n",
+		    current->comm);
+}
+
+/*
+ * scan_unevictable_pages [vm] sysctl handler.  On demand re-scan of
+ * all nodes' unevictable lists for evictable pages
+ */
+unsigned long scan_unevictable_pages;
+
+int scan_unevictable_handler(struct ctl_table *table, int write,
+			   void __user *buffer,
+			   size_t *length, loff_t *ppos)
+{
+	warn_scan_unevictable_pages();
+	proc_doulongvec_minmax(table, write, buffer, length, ppos);
+	scan_unevictable_pages = 0;
+	return 0;
+}
+
+#ifdef CONFIG_NUMA
+/*
+ * per node 'scan_unevictable_pages' attribute.  On demand re-scan of
+ * a specified node's per zone unevictable lists for evictable pages.
+ */
+
+static ssize_t read_scan_unevictable_node(struct device *dev,
+					  struct device_attribute *attr,
+					  char *buf)
+{
+	warn_scan_unevictable_pages();
+	return sprintf(buf, "0\n");	/* always zero; should fit... */
+}
+
+static ssize_t write_scan_unevictable_node(struct device *dev,
+					   struct device_attribute *attr,
+					const char *buf, size_t count)
+{
+	warn_scan_unevictable_pages();
+	return 1;
+}
+
+
+static DEVICE_ATTR(scan_unevictable_pages, S_IRUGO | S_IWUSR,
+			read_scan_unevictable_node,
+			write_scan_unevictable_node);
+
+int scan_unevictable_register_node(struct node *node)
+{
+	return device_create_file(&node->dev, &dev_attr_scan_unevictable_pages);
+}
+
+void scan_unevictable_unregister_node(struct node *node)
+{
+	device_remove_file(&node->dev, &dev_attr_scan_unevictable_pages);
+}
+#endif

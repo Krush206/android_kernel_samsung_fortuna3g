@@ -51,7 +51,7 @@ int __init sec_avc_log_init(void)
 	return 1;
 }
 
-#define BUF_SIZE 512
+#define BUF_SIZE 256
 void sec_avc_log(char *fmt, ...)
 {
 	va_list args;
@@ -72,10 +72,11 @@ void sec_avc_log(char *fmt, ...)
 	size = strlen(buf);
 
 	if (idx + size > sec_avc_log_size - 1) {
-		len = scnprintf(&sec_avc_log_buf[0], size + 1, "%s\n", buf);
+		len = scnprintf(&sec_avc_log_buf[0],
+				size + 1, "%s", buf);
 		*sec_avc_log_ptr = len;
 	} else {
-		len = scnprintf(&sec_avc_log_buf[idx], size + 1, "%s\n", buf);
+		len = scnprintf(&sec_avc_log_buf[idx], size + 1, "%s", buf);
 		*sec_avc_log_ptr += len;
 	}
 }

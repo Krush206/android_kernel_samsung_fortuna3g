@@ -43,19 +43,6 @@
 #if IST30XX_CMCS_TEST
 #include "ist30xxc_cmcs.h"
 #endif
-#if IST30XX_CMCS_JIT_TEST
-#include "ist30xxc_cmcs_jit.h"
-#endif
-
-#if defined(CONFIG_TOUCH_DISABLER)
-#include <linux/input/touch_disabler.h>
-#endif
-
-#ifdef CONFIG_DUAL_TOUCH_IC_CHECK
-static int probe_finished = 0;
-#endif
-
-#define J5_100_OHM_VALUE    0xECEC0001
 
 #define MAX_ERR_CNT			(100)
 #define EVENT_TIMER_INTERVAL		(HZ * timer_period_ms / 1000)
@@ -462,6 +449,7 @@ void print_tsp_event(struct ist30xx_data *data, finger_info *finger)
 			tsp_noti("%s%d(%d, %d)\n", TOUCH_UP_MESSAGE, finger->bit_field.id, data->lx, data->ly);
 #else
 			tsp_noti("%s%d\n", TOUCH_UP_MESSAGE, finger->bit_field.id);
+
 #endif
 			tsp_touched[idx] = false;
 
@@ -527,8 +515,6 @@ static void clear_input_data(struct ist30xx_data *data)
 {
 	int id = 1;
 	u32 status;
-
-	input_report_key(data->input_dev, BTN_TOUCH, 0);
 
 	status = PARSE_FINGER_STATUS(data->t_status);
 	while (status) {
@@ -636,9 +622,6 @@ static void report_input_data(struct ist30xx_data *data, int finger_counts,
 				fingers[idx].bit_field.area);
 		if (data->jig_mode)
 			input_report_abs(data->input_dev, ABS_MT_PRESSURE, z_values[idx]);
-
-		input_report_key(data->input_dev, BTN_TOUCH, 1);
-
 		idx++;
 	}
 
@@ -652,9 +635,6 @@ static void report_input_data(struct ist30xx_data *data, int finger_counts,
 		print_tkey_event(data, id + 1);
 	}
 #endif /* IST30XX_USE_KEY */
-
-	if (finger_counts == 0)
-		input_report_key(data->input_dev, BTN_TOUCH, 0);
 
 	data->irq_err_cnt = 0;
 	data->scan_retry = 0;
@@ -774,15 +754,6 @@ static irqreturn_t ist30xx_irq_thread(int irq, void *ptr)
 #if IST30XX_CMCS_TEST
 	if (unlikely(*msg == IST30XX_CMCS_MSG_VALID)) {
 		data->status.cmcs = 1;
-		tsp_info("cmcs status: 0x%08x\n", *msg);
-
-		goto irq_end;
-	}
-#endif
-
-#if IST30XX_CMCS_JIT_TEST
-	if (((*msg & CMCS_MSG_MASK) == CM_MSG_VALID) || ((*msg & CMCS_MSG_MASK) == CS_MSG_VALID)) {
-		data->status.cmcs = *msg;
 		tsp_info("cmcs status: 0x%08x\n", *msg);
 
 		goto irq_end;
@@ -1275,10 +1246,6 @@ static void debug_work_func(struct work_struct *work)
 			struct ist30xx_data, work_debug_algorithm);
 
 	buf32 = kzalloc(ist30xx_algr_size, GFP_KERNEL);
-	if (!buf32) {
-		tsp_info("%s: Couldn't Allocate memory\n", __func__);
-                return;
-	}
 
 	for (i = 0; i < ist30xx_algr_size; i++) {
 		ret = ist30xx_read_buf(data->client,
@@ -1293,7 +1260,6 @@ static void debug_work_func(struct work_struct *work)
 
 	tsp_debug(" 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x\n",
 			buf32[0], buf32[1], buf32[2], buf32[3], buf32[4]);
-	kfree(buf32);
 #endif
 }
 
@@ -1417,38 +1383,17 @@ static int ist30xx_parse_dt(struct device *dev, struct ist30xx_data *data)
 	if (of_property_read_u32(np, "imagis,fw-bin", &data->dt_data->fw_bin))
 		tsp_info("%s() fw-bin: %d\n", __func__, data->dt_data->fw_bin);
 
-	if (of_property_read_u32(np, "imagis,tkey", &data->dt_data->tkey) >= 0 )
-		tsp_info("%s() tkey: %d\n", __func__, data->dt_data->tkey);
-
-	if (of_property_read_u32(np, "imagis,octa-hw", &data->dt_data->octa_hw) >= 0 )
-		tsp_info("%s() octa-hw: %d\n", __func__, data->dt_data->octa_hw);
-
-	if (of_property_read_u32(np, "imagis,multiple-tsp", &data->dt_data->multiple_tsp) >= 0 )
-		tsp_info("%s() multiple_tsp: %d\n", __func__, data->dt_data->multiple_tsp);
-
 	if (of_property_read_string(np, "imagis,ic-version", &data->dt_data->ic_version) >= 0)
 		tsp_info("%s() ic_version: %s\n", __func__, data->dt_data->ic_version);
 
 	if (of_property_read_string(np, "imagis,project-name", &data->dt_data->project_name) >= 0)
 		tsp_info("%s() project_name: %s\n", __func__, data->dt_data->project_name);
 
-	if (of_property_read_string(np, "imagis,extra-string", &data->dt_data->extra_string) >= 0)
-		tsp_info("%s() extra_string: %s\n", __func__, data->dt_data->extra_string);
-
 	if (data->dt_data->ic_version && data->dt_data->project_name) {
-		if (!data->dt_data->multiple_tsp) {
-			if (data->dt_data->extra_string)
-				snprintf(data->dt_data->fw_path, FIRMWARE_PATH_LENGTH,
-						"%s%s_%s_%s.fw", FIRMWARE_PATH,
-						data->dt_data->ic_version, data->dt_data->project_name,
-						data->dt_data->extra_string);
-			else
-				snprintf(data->dt_data->fw_path, FIRMWARE_PATH_LENGTH,
-						"%s%s_%s.fw", FIRMWARE_PATH,
-						data->dt_data->ic_version, data->dt_data->project_name);
-
-			tsp_info("%s() firm path: %s\n", __func__, data->dt_data->fw_path);
-		}
+		snprintf(data->dt_data->fw_path, FIRMWARE_PATH_LENGTH,
+				"%s%s_%s.fw", FIRMWARE_PATH,
+				data->dt_data->ic_version, data->dt_data->project_name);
+		tsp_info("%s() firm path: %s\n", __func__, data->dt_data->fw_path);
 
 		snprintf(data->dt_data->cmcs_path, FIRMWARE_PATH_LENGTH,
 				"%s%s_%s_cmcs.bin", FIRMWARE_PATH,
@@ -1518,8 +1463,6 @@ static int ist30xx_set_input_device(struct ist30xx_data *data)
 #endif
 #endif
 
-	set_bit(BTN_TOUCH, data->input_dev->keybit);
-
 	input_set_drvdata(data->input_dev, data);
 	ret = input_register_device(data->input_dev);
 
@@ -1534,8 +1477,6 @@ static int ist30xx_probe(struct i2c_client *client,
 	int ret;
 	int retry = 3;
 	u32 xy_res;
-	u32 xy_swap;
-	u32 tsp_type = 0;
 
 	struct ist30xx_data *data;
 	struct input_dev *input_dev;
@@ -1628,38 +1569,6 @@ static int ist30xx_probe(struct i2c_client *client,
 		goto err_init_drv;
 	}
 
-#ifdef CONFIG_DUAL_TOUCH_IC_CHECK
-	while (retry-- > 0) {
-		ret = ist30xxc_isp_info_read(data, 0, &tsp_type, 1);
-	    tsp_info("%s: ret: %d, tsp_type: %x\n", __func__, ret, tsp_type);
-		if(ret < 0) {
-			tsp_info("no imagis chip!\n");
-			goto err_init_drv;
-		}
-		mdelay(10);
-	}
-	retry = 3;
-#endif
-
-	if (data->dt_data->multiple_tsp) {
-	   ret = ist30xxc_isp_info_read(data, 0, &tsp_type, 1);
-	   tsp_info("%s: ret: %d, tsp_type: %x\n", __func__, ret, tsp_type);
-
-	   if (data->dt_data->ic_version && data->dt_data->project_name && data->dt_data->extra_string) {
-		   if (ret || (tsp_type == J5_100_OHM_VALUE))
-			   snprintf(data->dt_data->fw_path, FIRMWARE_PATH_LENGTH,
-					   "%s%s_%s_%s.fw", FIRMWARE_PATH,
-					   data->dt_data->ic_version, data->dt_data->project_name,
-					   data->dt_data->extra_string);
-		   else
-			   snprintf(data->dt_data->fw_path, FIRMWARE_PATH_LENGTH,
-					   "%s%s_%s.fw", FIRMWARE_PATH,
-					   data->dt_data->ic_version, data->dt_data->project_name);
-
-		   tsp_info("%s() firm path: %s\n", __func__, data->dt_data->fw_path);
-	   }
-	}
-
 	/* FW do not enter sleep mode in probe */
 	ret = ist30xx_write_cmd(data->client,
 		IST30XX_HIB_CMD, (eHCOM_FW_HOLD << 16) | (1 & 0xFFFF));
@@ -1722,16 +1631,9 @@ static int ist30xx_probe(struct i2c_client *client,
 #endif /* IST30XX_UPDATE_BY_WORKQUEUE */
 #endif /* IST30XX_INTERNAL_BIN */
 
-	ret = ist30xx_read_cmd(data, IST30XX_REG_XY_SWAP, &xy_swap);
-	tsp_err("%s: ret:%d, swap:%x\n", __func__, ret, xy_swap & 0x01);
 	ret = ist30xx_read_cmd(data, IST30XX_REG_XY_RES, &xy_res);
-	if (xy_swap & 0x01) {
-		data->max_x = (u16)(xy_res & 0xFFFF);
-		data->max_y = (u16)(xy_res >> 16);
-	} else {
-		data->max_x = (u16)(xy_res >> 16);
-		data->max_y = (u16)(xy_res & 0xFFFF);
-	}
+	data->max_x = (u16)(xy_res >> 16);
+	data->max_y = (u16)(xy_res & 0xFFFF);
 	tsp_err("%s: ret:%d, xy:%X, x:%d, y:%d\n", __func__, ret, xy_res, data->max_x, data->max_y);
 
 	ret = ist30xx_set_input_device(data);
@@ -1760,13 +1662,7 @@ static int ist30xx_probe(struct i2c_client *client,
 #if IST30XX_CMCS_TEST
 	ret = ist30xx_init_cmcs_sysfs(data);
 	if (unlikely(ret))
-		tsp_err("%s: do not init cmcs\n",__func__);
-#endif
-
-#if IST30XX_CMCS_JIT_TEST
-	ret = ist30xx_init_cmcs_jit_sysfs(data);
-	if (unlikely(ret))
-		tsp_err("%s: do not init cmcs jitter\n",__func__);
+		tsp_err("%s: do not init cmcs\n");
 #endif
 
 #if IST30XX_TRACKING_MODE
@@ -1817,19 +1713,13 @@ static int ist30xx_probe(struct i2c_client *client,
 #endif
 	data->initialized = true;
 
-#ifdef CONFIG_DUAL_TOUCH_IC_CHECK
-	probe_finished = 1;
-#endif
-
 	tsp_info("### IMAGIS probe success ###\n");
 
 	/* release Firmware hold mode(forced active mode) */
 	ret = ist30xx_write_cmd(data->client,
 		IST30XX_HIB_CMD, (eHCOM_FW_HOLD << 16) | (0 & 0xFFFF));
 	tsp_info("%s: release FW_HOLD\n", __func__);
-#if defined(CONFIG_TOUCH_DISABLER)
-	touch_disabler_set_ts_dev(input_dev);
-#endif
+
 	return 0;
 
 err_sec_sysfs:
@@ -1870,16 +1760,6 @@ err_alloc_dev:
 static int ist30xx_remove(struct i2c_client *client)
 {
 	struct ist30xx_data *data = i2c_get_clientdata(client);
-#if defined(CONFIG_TOUCH_DISABLER)
-	touch_disabler_set_ts_dev(NULL);
-#endif
-#ifdef CONFIG_DUAL_TOUCH_IC_CHECK
-	if(!probe_finished)
-	{
-		printk("%s: imagis not register!\n", __func__);
-		return -ENODEV;
-	}
-#endif
 
 #ifdef CONFIG_HAS_EARLYSUSPEND
 	unregister_early_suspend(&data->early_suspend);
@@ -1908,15 +1788,6 @@ static void ist30xx_shutdown(struct i2c_client *client)
 {
 	struct ist30xx_data *data = i2c_get_clientdata(client);
 
-#ifdef CONFIG_DUAL_TOUCH_IC_CHECK
-	if(!probe_finished)
-	{
-		printk("%s: imagis not register!\n", __func__);
-		return ;
-	}
-#endif
-
-	tsp_err("%s is called\n", __func__);
 	del_timer(&event_timer);
 	cancel_delayed_work_sync(&data->work_noise_protect);
 	cancel_delayed_work_sync(&data->work_reset_check);
@@ -1947,6 +1818,13 @@ static struct of_device_id ist30xx_match_table[] = {
 #define ist30xx_match_table NULL
 #endif
 
+#ifndef CONFIG_HAS_EARLYSUSPEND
+static const struct dev_pm_ops ist30xx_pm_ops = {
+	.suspend	= ist30xx_suspend,
+	.resume		= ist30xx_resume,
+};
+#endif
+
 static struct i2c_driver ist30xx_i2c_driver = {
 	.id_table	= ist30xx_idtable,
 	.probe		= ist30xx_probe,
@@ -1956,28 +1834,15 @@ static struct i2c_driver ist30xx_i2c_driver = {
 		.owner		= THIS_MODULE,
 		.name		= IST30XX_DEV_NAME,
 		.of_match_table = ist30xx_match_table,
+#ifndef CONFIG_HAS_EARLYSUSPEND
+		.pm		= &ist30xx_pm_ops,
+#endif
 	},
 };
 
-extern int get_lcd_attached(char *mode);
-
-#ifdef CONFIG_SAMSUNG_LPM_MODE
-extern int poweroff_charging;
-#endif
 static int __init ist30xx_init(void)
 {
 	tsp_info("%s()\n", __func__);
-#ifdef CONFIG_SAMSUNG_LPM_MODE
-	if (poweroff_charging) {
-		tsp_info("%s() LPM Charging Mode!!\n", __func__);
-		return 0;
-	}
-#endif
-
-	if (!get_lcd_attached("GET")) {
-		tsp_err("%s: LCD is not attached\n", __func__);
-		return 0;
-	}
 	return i2c_add_driver(&ist30xx_i2c_driver);
 }
 

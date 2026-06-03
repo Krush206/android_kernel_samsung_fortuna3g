@@ -79,15 +79,6 @@ struct attribute_group {
 	.show	= _name##_show,					\
 }
 
-
-#define __ATTR_WO(_name) {						\
-	.attr	= { .name = __stringify(_name), .mode = S_IWUSR },	\
-	.store	= _name##_store,					\
-}
-
-#define __ATTR_RW(_name) __ATTR(_name, (S_IWUSR | S_IRUGO),		\
-			 _name##_show, _name##_store)
-
 #define __ATTR_NULL { .attr = { .name = NULL } }
 
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
@@ -156,7 +147,7 @@ int __must_check sysfs_create_files(struct kobject *kobj,
 int __must_check sysfs_chmod_file(struct kobject *kobj,
 				  const struct attribute *attr, umode_t mode);
 #if defined(CONFIG_MMC_BKOPS_NODE_UID) || defined(CONFIG_MMC_BKOPS_NODE_GID)
-int __must_check sysfs_chown_file(struct kobject *kobj,
+int __must_check sysfs_chown_file(struct kobject *kobj, 
 				  const struct attribute *attr, uid_t uid, gid_t gid);
 #endif
 void sysfs_remove_file(struct kobject *kobj, const struct attribute *attr);

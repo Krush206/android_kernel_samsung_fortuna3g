@@ -1520,22 +1520,6 @@ static int soc_check_aux_dev(struct snd_soc_card *card, int num)
 	return -EPROBE_DEFER;
 }
 
-int soc_check_aux_dev_byname(struct snd_soc_card *card, const char *codec_name)
-{
-	struct snd_soc_codec *codec;
-
-	/* find CODEC from registered CODECs*/
-	list_for_each_entry(codec, &codec_list, list) {
-		if (!strcmp(codec->name, codec_name))
-			return 0;
-	}
-
-	dev_err(card->dev, "ASoC: %s not registered\n", codec_name);
-
-	return -EPROBE_DEFER;
-}
-EXPORT_SYMBOL(soc_check_aux_dev_byname);
-
 static int soc_probe_aux_dev(struct snd_soc_card *card, int num)
 {
 	struct snd_soc_aux_dev *aux_dev = &card->aux_dev[num];
@@ -2119,13 +2103,9 @@ unsigned int snd_soc_read(struct snd_soc_codec *codec, unsigned int reg)
 {
 	unsigned int ret;
 
-	if (codec->read) {
-		ret = codec->read(codec, reg);
-		dev_dbg(codec->dev, "read %x => %x\n", reg, ret);
-		trace_snd_soc_reg_read(codec, reg, ret);
-	}
-	else
-		ret = -EIO;
+	ret = codec->read(codec, reg);
+	dev_dbg(codec->dev, "read %x => %x\n", reg, ret);
+	trace_snd_soc_reg_read(codec, reg, ret);
 
 	return ret;
 }
@@ -2134,13 +2114,9 @@ EXPORT_SYMBOL_GPL(snd_soc_read);
 unsigned int snd_soc_write(struct snd_soc_codec *codec,
 			   unsigned int reg, unsigned int val)
 {
-	if (codec->write) {
-		dev_dbg(codec->dev, "write %x = %x\n", reg, val);
-		trace_snd_soc_reg_write(codec, reg, val);
-		return codec->write(codec, reg, val);
-	}
-	else
-		return -EIO;
+	dev_dbg(codec->dev, "write %x = %x\n", reg, val);
+	trace_snd_soc_reg_write(codec, reg, val);
+	return codec->write(codec, reg, val);
 }
 EXPORT_SYMBOL_GPL(snd_soc_write);
 
@@ -2333,22 +2309,6 @@ static int snd_soc_add_controls(struct snd_card *card, struct device *dev,
 
 	return 0;
 }
-
-struct snd_kcontrol *snd_soc_card_get_kcontrol(struct snd_soc_card *soc_card,
-					       const char *name)
-{
-	struct snd_card *card = soc_card->snd_card;
-	struct snd_kcontrol *kctl;
-
-	if (unlikely(!name))
-		return NULL;
-
-	list_for_each_entry(kctl, &card->controls, list)
-		if (!strncmp(kctl->id.name, name, sizeof(kctl->id.name)))
-			return kctl;
-	return NULL;
-}
-EXPORT_SYMBOL_GPL(snd_soc_card_get_kcontrol);
 
 /**
  * snd_soc_add_codec_controls - add an array of controls to a codec.
@@ -3218,18 +3178,6 @@ out:
 	return ret;
 }
 EXPORT_SYMBOL_GPL(snd_soc_bytes_put);
-
-int snd_soc_bytes_info_ext(struct snd_kcontrol *kcontrol,
-			struct snd_ctl_elem_info *ucontrol)
-{
-	struct soc_bytes_ext *params = (void *)kcontrol->private_value;
-
-	ucontrol->type = SNDRV_CTL_ELEM_TYPE_BYTES;
-	ucontrol->count = params->max;
-
-	return 0;
-}
-EXPORT_SYMBOL_GPL(snd_soc_bytes_info_ext);
 
 /**
  * snd_soc_info_xr_sx - signed multi register info callback

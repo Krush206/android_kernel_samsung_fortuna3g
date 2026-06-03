@@ -123,6 +123,7 @@ extern int system_rev;
 #define DEV_AUDIO_1			(1 << 0)
 
 #define DEV_T1_USB_MASK		(DEV_USB_OTG | DEV_USB_CHG | DEV_USB)
+#define DEV_T1_UART_MASK	(DEV_UART)
 #define DEV_T1_CHARGER_MASK	(DEV_DEDICATED_CHG | DEV_CAR_KIT)
 #define DEV_CARKIT_CHARGER1_MASK	(1 << 1)
 #define MANSW1_OPEN_RUSTPROOF	((0x0 << 5) | (0x3 << 2) | (1 << 0))
@@ -155,7 +156,7 @@ extern int system_rev;
 #define DEV_AV_VBUS			(1 << 4)
 #define DEV_U200_CHARGER	(1 << 6)
 
-#define DEV_T3_CHARGER_MASK	DEV_U200_CHARGER
+#define DEV_T3_CHARGER_MASK	(DEV_U200_CHARGER | DEV_NON_STANDARD)
 
 /*
  * Manual Switch
@@ -236,7 +237,7 @@ struct sm5502_usbsw {
 	int				adc;
 	bool				undefined_attached;
 	/* muic current attached device */
-	muic_attached_dev		attached_dev;
+	enum muic_attached_dev		attached_dev;
 #if defined(CONFIG_MUIC_SM5502_SUPPORT_LANHUB_TA)
 	unsigned int			previous_dock;
 	unsigned int			lanhub_ta_status;
@@ -375,11 +376,11 @@ static void sm5502_reg_init(struct sm5502_usbsw *usbsw)
 	ret = i2c_smbus_write_byte_data(client, REG_TIMING_SET1, 0x04);
 	if (ret < 0)
 		dev_err(&client->dev, "%s: err %d\n", __func__, ret);
-        /*Modify from supplier, to enble charge pump to enable the negative power supply.*/
-        /*IF not, to insert earphone and play mp3 with the maximum volume, messy code output UART.*/
-        ret = i2c_smbus_write_byte_data(client, REG_CHGPUMP_SET, 0x00);
-        if (ret < 0)
-            dev_err(&client->dev, "%s: err %d\n", __func__, ret);
+	/*Modify from supplier, to enble charge pump to enable the negative power supply.*/
+	/*IF not, to insert earphone and play mp3 with the maximum volume, messy code output UART.*/
+	ret = i2c_smbus_write_byte_data(client, REG_CHGPUMP_SET, 0x00);
+	if (ret < 0)
+		dev_err(&client->dev, "%s: err %d\n", __func__, ret);
 }
 
 static ssize_t sm5502_muic_show_attached_dev(struct device *dev,
@@ -1060,8 +1061,7 @@ static int sm5502_attach_dev(struct sm5502_usbsw *usbsw)
 			(check_sm5502_jig_state() ? "ON" : "OFF"));
 
 	/* USB */
-	if ((val1 & DEV_USB) || (val2 & DEV_T2_USB_MASK)
-			|| (val3 & DEV_NON_STANDARD)) {
+	if (val1 & DEV_USB || val2 & DEV_T2_USB_MASK) {
 		if (vbus & DEV_VBUSIN_VALID) {
 			pr_info("[SM5502 MUIC] USB Connected\n");
 			pdata->callback(CABLE_TYPE_USB, SM5502_ATTACHED);
@@ -1262,8 +1262,8 @@ static int sm5502_detach_dev(struct sm5502_usbsw *usbsw)
 	}
 #endif
 	/* USB */
-	if ((usbsw->dev1 & DEV_USB) || (usbsw->dev2 & DEV_T2_USB_MASK)
-			|| (usbsw->dev3 & DEV_NON_STANDARD)) {
+	if (usbsw->dev1 & DEV_USB ||
+			usbsw->dev2 & DEV_T2_USB_MASK) {
 		pr_info("[MUIC] USB Disonnected\n");
 		pdata->callback(CABLE_TYPE_USB, SM5502_DETACHED);
 	} else if (usbsw->dev1 & DEV_USB_CHG) {

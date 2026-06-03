@@ -2450,7 +2450,7 @@ static inline int security_task_prctl(int option, unsigned long arg2,
 				      unsigned long arg4,
 				      unsigned long arg5)
 {
-	return cap_task_prctl(option, arg2, arg3, arg4, arg5);
+	return cap_task_prctl(option, arg2, arg3, arg3, arg5);
 }
 
 static inline void security_task_to_inode(struct task_struct *p, struct inode *inode)
@@ -3084,14 +3084,6 @@ static inline void security_audit_rule_free(void *lsmrule)
 
 #endif /* CONFIG_SECURITY */
 #endif /* CONFIG_AUDIT */
-
-#ifdef CONFIG_SECURITY_SECURELEVEL
-extern int get_securelevel(void);
-extern int set_securelevel(int new_securelevel);
-#else
-static inline int get_securelevel(void) { return 0; }
-static inline int set_securelevel(int new_securelevel) { return 0; }
-#endif /* CONFIG_SECURELEVEL */
 
 #ifdef CONFIG_SECURITYFS
 
